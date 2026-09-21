@@ -15,51 +15,94 @@ describe('E1-03: Integración de idempotencia y prevención de duplicados', () =
     await prisma.onModuleInit()
     service = new SyncService(prisma)
 
-    // Buscar una asignación existente activa para la prueba
-    const placement = await prisma.placement.findFirst({
+    // Si ya existe un placement activo (entorno local con seed), lo usamos
+    const existingPlacement = await prisma.placement.findFirst({
       where: { status: 'ACTIVE' },
     })
 
-    if (placement) {
-      studentId = placement.studentId
-      placementId = placement.id
-    } else {
-      // Si no existe, crear usuario y placement para asegurar entorno autónomo
-      const fakeAuthSecret = process.env.TEST_SECRET ?? 'dummy-secret-value'
-      const user = await prisma.user.create({
-        data: {
-          email: `test-e103-${Date.now()}@example.com`,
-          password: fakeAuthSecret,
-          fullName: 'Estudiante Test E1-03',
-          role: 'STUDENT',
-        },
-      })
-      const company = await prisma.company.findFirst()
-      const tutor = await prisma.user.findFirst({ where: { role: 'TUTOR' } })
-      const offer = await prisma.offer.findFirst()
-      const app = await prisma.application.create({
-        data: {
-          offerId: offer?.id ?? 1,
-          studentId: user.id,
-          motivation: 'Test',
-          status: 'ACCEPTED',
-        },
-      })
-      const newPlacement = await prisma.placement.create({
-        data: {
-          applicationId: app.id,
-          studentId: user.id,
-          tutorId: tutor?.id ?? 1,
-          companyId: company?.id ?? 1,
-          startDate: new Date('2026-03-01'),
-          endDate: new Date('2026-07-31'),
-          requiredHours: 240,
-          status: 'ACTIVE',
-        },
-      })
-      studentId = user.id
-      placementId = newPlacement.id
+    if (existingPlacement) {
+      studentId = existingPlacement.studentId
+      placementId = existingPlacement.id
+      return
     }
+
+    // En CI (donde la base de datos corre limpia sin seed), creamos los registros necesarios
+    const timestamp = Date.now()
+    const fakeAuthSecret = process.env.TEST_SECRET ?? 'dummy-secret-value'
+
+    let company = await prisma.company.findFirst()
+    if (!company) {
+      company = await prisma.company.create({
+        data: {
+          taxId: `179${timestamp.toString().slice(-7)}001`,
+          name: 'Empresa Test CI',
+          sector: 'Software',
+          contactEmail: `ci-${timestamp}@empresa.com`,
+        },
+      })
+    }
+
+    let tutor = await prisma.user.findFirst({ where: { role: 'TUTOR' } })
+    if (!tutor) {
+      tutor = await prisma.user.create({
+        data: {
+          email: `tutor-ci-${timestamp}@example.com`,
+          password: fakeAuthSecret,
+          fullName: 'Tutor CI',
+          role: 'TUTOR',
+        },
+      })
+    }
+
+    let offer = await prisma.offer.findFirst()
+    if (!offer) {
+      offer = await prisma.offer.create({
+        data: {
+          companyId: company.id,
+          title: 'Oferta Test CI',
+          description: 'Descripción test',
+          modality: 'PRESENCIAL',
+          seats: 5,
+          requiredHours: 240,
+          periodStart: new Date('2026-01-01'),
+          periodEnd: new Date('2026-12-31'),
+        },
+      })
+    }
+
+    const student = await prisma.user.create({
+      data: {
+        email: `student-ci-${timestamp}@example.com`,
+        password: fakeAuthSecret,
+        fullName: 'Estudiante Test CI',
+        role: 'STUDENT',
+      },
+    })
+
+    const app = await prisma.application.create({
+      data: {
+        offerId: offer.id,
+        studentId: student.id,
+        motivation: 'Test motivación CI',
+        status: 'ACCEPTED',
+      },
+    })
+
+    const newPlacement = await prisma.placement.create({
+      data: {
+        applicationId: app.id,
+        studentId: student.id,
+        tutorId: tutor.id,
+        companyId: company.id,
+        startDate: new Date('2026-03-01'),
+        endDate: new Date('2026-07-31'),
+        requiredHours: 240,
+        status: 'ACTIVE',
+      },
+    })
+
+    studentId = student.id
+    placementId = newPlacement.id
   })
 
   afterAll(async () => {
