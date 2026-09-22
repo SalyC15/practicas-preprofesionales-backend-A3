@@ -1,7 +1,10 @@
 import { Injectable } from '@nestjs/common'
+import type { Prisma } from '@prisma/client'
 import { PrismaService } from '../prisma/prisma.service'
 import { type Checkpoint, decodeCheckpoint, encodeCheckpoint } from './checkpoint'
 import type { SyncOperationInput, SyncOperationResult } from './dto/push.dto'
+
+type DbClient = Prisma.TransactionClient | PrismaService
 
 @Injectable()
 export class SyncService {
@@ -42,59 +45,121 @@ export class SyncService {
   async push(userId: number, ops: SyncOperationInput[]) {
     const results: SyncOperationResult[] = []
     for (const op of ops) {
-      let result: SyncOperationResult
-      try {
-        // D-01: sync_operations se escribe pero NUNCA se consulta antes de
-        // aplicar. Un reintento con el mismo clientOpId aplica dos veces.
-        result = await this.applyOperation(userId, op)
-      } catch (err) {
-        result = {
-          clientOpId: op.clientOpId,
-          status: 'rejected',
-          server: null,
-          reason: err instanceof Error ? err.message : 'no se pudo aplicar la operación',
-        }
-      }
-      try {
-        await this.prisma.syncOperation.create({
-          data: { clientOpId: op.clientOpId, userId, response: result as unknown as object },
-        })
-      } catch {
-        // clientOpId es la clave primaria: un reintento choca con el
-        // registro previo. El log de sync_operations se ignora, pero la
-        // operación de negocio ya se aplicó arriba — eso es D-01.
-      }
-      results.push(result)
+      results.push(await this.processOperation(userId, op))
     }
     return { results }
   }
 
-  private async applyOperation(userId: number, op: SyncOperationInput): Promise<SyncOperationResult> {
+  private async processOperation(userId: number, op: SyncOperationInput): Promise<SyncOperationResult> {
+    // 1. Idempotencia: si la operación ya fue procesada previamente, devolver la respuesta guardada
+    const existing = await this.prisma.syncOperation.findUnique({
+      where: { clientOpId: op.clientOpId },
+    })
+    if (existing) {
+      return existing.response as unknown as SyncOperationResult
+    }
+
+    try {
+      return await this.executeInTransaction(async (tx) => {
+        // Doble verificación dentro de la transacción por si otra request concurrente completó primero
+        const concurrentOp = await tx.syncOperation.findUnique({
+          where: { clientOpId: op.clientOpId },
+        })
+        if (concurrentOp) {
+          return concurrentOp.response as unknown as SyncOperationResult
+        }
+
+        const opResult = await this.applyOperation(userId, op, tx)
+        const normalized = JSON.parse(JSON.stringify(opResult)) as SyncOperationResult
+        await tx.syncOperation.create({
+          data: {
+            clientOpId: op.clientOpId,
+            userId,
+            response: normalized as unknown as object,
+          },
+        })
+        return normalized
+      })
+    } catch (err) {
+      return this.handleCollisionOrError(userId, op, err)
+    }
+  }
+
+  private async handleCollisionOrError(
+    userId: number,
+    op: SyncOperationInput,
+    err: unknown,
+  ): Promise<SyncOperationResult> {
+    // En caso de concurrencia: si otra transacción ganó la carrera en sync_operations,
+    // la transacción actual revierte cualquier inserción y devolvemos el resultado ganador.
+    const winner = await this.prisma.syncOperation.findUnique({
+      where: { clientOpId: op.clientOpId },
+    })
+    if (winner) {
+      return winner.response as unknown as SyncOperationResult
+    }
+
+    const result: SyncOperationResult = {
+      clientOpId: op.clientOpId,
+      status: 'rejected',
+      server: null,
+      reason: err instanceof Error ? err.message : 'no se pudo aplicar la operación',
+    }
+    try {
+      const normalized = JSON.parse(JSON.stringify(result)) as SyncOperationResult
+      await this.prisma.syncOperation.create({
+        data: { clientOpId: op.clientOpId, userId, response: normalized as unknown as object },
+      })
+      return normalized
+    } catch {
+      return result
+    }
+  }
+
+  private async executeInTransaction<T>(fn: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
+    if (typeof this.prisma.$transaction === 'function') {
+      return this.prisma.$transaction(fn)
+    }
+    return fn(this.prisma as unknown as Prisma.TransactionClient)
+  }
+
+  private extractHourLogFields(payload: Record<string, unknown>) {
+    return {
+      date: new Date(String(payload.date)),
+      startTime: String(payload.startTime),
+      endTime: String(payload.endTime),
+      hours: Number(payload.hours),
+      activity: String(payload.activity),
+    }
+  }
+
+  private async applyOperation(
+    userId: number,
+    op: SyncOperationInput,
+    db: DbClient = this.prisma,
+  ): Promise<SyncOperationResult> {
     if (op.entity !== 'hourLog') {
       return { clientOpId: op.clientOpId, status: 'rejected', server: null, reason: 'entidad no sincronizable desde el cliente' }
     }
 
     if (op.op === 'create') {
-      const placement = await this.prisma.placement.findUnique({ where: { id: Number(op.payload.placementId) } })
+      const placement = await db.placement.findUnique({ where: { id: Number(op.payload.placementId) } })
       if (!placement || placement.studentId !== userId) {
         return { clientOpId: op.clientOpId, status: 'rejected', server: null, reason: 'el placement no pertenece al usuario' }
       }
 
-      const created = await this.prisma.hourLog.create({
+      const fields = this.extractHourLogFields(op.payload as Record<string, unknown>)
+      const created = await db.hourLog.create({
         data: {
           placementId: Number(op.payload.placementId),
-          date: new Date(String(op.payload.date)),
-          startTime: String(op.payload.startTime),
-          endTime: String(op.payload.endTime),
-          hours: Number(op.payload.hours),
-          activity: String(op.payload.activity),
+          ...fields,
           status: 'SUBMITTED',
         },
       })
       return { clientOpId: op.clientOpId, status: 'applied', server: created as never, reason: null }
     }
 
-    const existing = await this.prisma.hourLog.findUnique({
+    const existing = await db.hourLog.findUnique({
       where: { id: Number(op.payload.id) },
       include: { placement: true },
     })
@@ -104,21 +169,18 @@ export class SyncService {
 
     if (op.op === 'update') {
       // La actualización aplica los campos recibidos y avanza version.
-      const updated = await this.prisma.hourLog.update({
+      const fields = this.extractHourLogFields(op.payload as Record<string, unknown>)
+      const updated = await db.hourLog.update({
         where: { id: Number(op.payload.id) },
         data: {
-          date: new Date(String(op.payload.date)),
-          startTime: String(op.payload.startTime),
-          endTime: String(op.payload.endTime),
-          hours: Number(op.payload.hours),
-          activity: String(op.payload.activity),
+          ...fields,
           version: { increment: 1 },
         },
       })
       return { clientOpId: op.clientOpId, status: 'applied', server: updated as never, reason: null }
     }
 
-    const deleted = await this.prisma.hourLog.update({
+    const deleted = await db.hourLog.update({
       where: { id: Number(op.payload.id) },
       data: { deletedAt: new Date(), version: { increment: 1 } },
     })
