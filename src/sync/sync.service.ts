@@ -15,9 +15,10 @@ export class SyncService {
 
   async pull(userId: number, since: string | undefined, limit: number) {
     const cursor = decodeCheckpoint(since)
-    // El cursor avanza por updatedAt.
-    const where = cursor ? { updatedAt: { gt: new Date(cursor.updatedAt) } } : {}
-    const order = { updatedAt: 'asc' as const }
+    // E1-05: el cursor es compuesto (updatedAt, id). El filtro debe desempatar por id
+    // para no saltarse filas que comparten el mismo `updatedAt` (mismo instante).
+    const where = this.buildCursorWhere(cursor)
+    const order = [{ updatedAt: 'asc' as const }, { id: 'asc' as const }]
     const scope = { placement: { OR: [{ studentId: userId }, { tutorId: userId }] } }
 
     const [placements, hourLogs, documents, evaluations] = await Promise.all([
@@ -31,11 +32,14 @@ export class SyncService {
       this.prisma.evaluation.findMany({ where: { ...where, ...scope }, orderBy: order, take: limit }),
     ])
 
-    const newest = [...placements, ...hourLogs, ...documents, ...evaluations]
-      .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())[0]
-
-    const checkpoint: Checkpoint | null = newest
-      ? { updatedAt: new Date(newest.updatedAt).toISOString(), id: newest.id }
+    // El checkpoint es la última fila del orden global (updatedAt asc, id asc) entre
+    // las cuatro entidades. Eso garantiza que la siguiente página parta exactamente
+    // desde donde terminó esta, sin duplicar y sin saltarse filas con el mismo
+    // `updatedAt` (que serían indistinguibles solo por timestamp).
+    const merged = [...placements, ...hourLogs, ...documents, ...evaluations]
+    const lastByOrder = this.pickLastByOrder(merged)
+    const checkpoint: Checkpoint | null = lastByOrder
+      ? { updatedAt: new Date(lastByOrder.updatedAt).toISOString(), id: lastByOrder.id }
       : cursor
 
     return {
@@ -43,6 +47,40 @@ export class SyncService {
       checkpoint: checkpoint ? encodeCheckpoint(checkpoint) : null,
       hasMore: [placements, hourLogs, documents, evaluations].some((rows) => rows.length === limit),
     }
+  }
+
+  // E1-05: el cursor se compone de (updatedAt, id). Devuelve filas que están
+  // estrictamente después del cursor en el orden lexicográfico (updatedAt, id).
+  private buildCursorWhere(cursor: Checkpoint | null) {
+    if (!cursor) return {}
+    const t = new Date(cursor.updatedAt)
+    return {
+      OR: [
+        { updatedAt: { gt: t } },
+        { updatedAt: t, id: { gt: cursor.id } },
+      ],
+    }
+  }
+
+  // E1-05: dada la concatenación de las 4 entidades devueltas en esta página,
+  // devuelve la fila "más alta" en el orden (updatedAt asc, id asc), o null si
+  // no hay filas. Es lo que el cliente usará como checkpoint para la siguiente
+  // descarga, y es estable porque Prisma ya ordenó cada entidad por las mismas
+  // dos claves.
+  private pickLastByOrder(
+    rows: Array<{ id: number; updatedAt: Date | string }>,
+  ): { id: number; updatedAt: Date | string } | null {
+    if (rows.length === 0) return null
+    let best = rows[0]
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i]
+      const bestTime = new Date(best.updatedAt).getTime()
+      const rowTime = new Date(row.updatedAt).getTime()
+      if (rowTime > bestTime || (rowTime === bestTime && row.id > best.id)) {
+        best = row
+      }
+    }
+    return best
   }
 
   async push(userId: number, ops: SyncOperationInput[]) {
