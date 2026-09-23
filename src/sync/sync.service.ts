@@ -1,10 +1,13 @@
 import { Injectable } from '@nestjs/common'
-import { HourLogStatus, type Prisma } from '@prisma/client'
+import { HourLogStatus, Prisma, type Prisma as PrismaTypes } from '@prisma/client'
 import { PrismaService } from '../prisma/prisma.service'
 import { type Checkpoint, decodeCheckpoint, encodeCheckpoint } from './checkpoint'
 import type { SyncOperationInput, SyncOperationResult } from './dto/push.dto'
 
-type DbClient = Prisma.TransactionClient | PrismaService
+// `Prisma` (valor) se usa para `Prisma.PrismaClientKnownRequestError`; el tipo del
+// cliente de transacción entra como `PrismaTypes` para no chocar con el namespace.
+
+type DbClient = PrismaTypes.TransactionClient | PrismaService
 
 @Injectable()
 export class SyncService {
@@ -116,11 +119,11 @@ export class SyncService {
     }
   }
 
-  private async executeInTransaction<T>(fn: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
+  private async executeInTransaction<T>(fn: (tx: PrismaTypes.TransactionClient) => Promise<T>): Promise<T> {
     if (typeof this.prisma.$transaction === 'function') {
       return this.prisma.$transaction(fn)
     }
-    return fn(this.prisma as unknown as Prisma.TransactionClient)
+    return fn(this.prisma as unknown as PrismaTypes.TransactionClient)
   }
 
   private extractHourLogFields(payload: Record<string, unknown>) {
@@ -183,11 +186,32 @@ export class SyncService {
       }
 
       // E1-04: ambos lados en DRAFT/SUBMITTED. Gana la edición más reciente.
-      // Comparamos el updatedAt del cliente (enviado en el payload) contra el del servidor.
-      const clientUpdatedAt = op.payload.updatedAt
-        ? new Date(String(op.payload.updatedAt))
-        : new Date(0)
+      // Primero validamos que el payload.traiga un updatedAt parseable: sin esto,
+      // un string inválido produce Invalid Date (getTime() === NaN) y la comparación
+      // con el servidor devuelve false, dejando pasar la edición por un fallo
+      // silencioso. Si no hay updatedAt o no se puede parsear, rechazamos.
+      const rawClientUpdatedAt = op.payload.updatedAt
+      const clientUpdatedAt =
+        typeof rawClientUpdatedAt === 'string' || rawClientUpdatedAt instanceof Date
+          ? new Date(String(rawClientUpdatedAt))
+          : null
+      if (!clientUpdatedAt || Number.isNaN(clientUpdatedAt.getTime())) {
+        return {
+          clientOpId: op.clientOpId,
+          status: 'rejected',
+          server: existing as unknown as Record<string, unknown>,
+          reason: 'updatedAt inválido en la operación',
+        }
+      }
       const serverUpdatedAt = new Date(existing.updatedAt)
+      if (Number.isNaN(serverUpdatedAt.getTime())) {
+        return {
+          clientOpId: op.clientOpId,
+          status: 'rejected',
+          server: existing as unknown as Record<string, unknown>,
+          reason: 'updatedAt inválido en el servidor',
+        }
+      }
       if (clientUpdatedAt.getTime() <= serverUpdatedAt.getTime()) {
         return {
           clientOpId: op.clientOpId,
@@ -198,14 +222,49 @@ export class SyncService {
       }
 
       const fields = this.extractHourLogFields(op.payload as Record<string, unknown>)
-      const updated = await db.hourLog.update({
-        where: { id: Number(op.payload.id) },
-        data: {
-          ...fields,
-          version: { increment: 1 },
-        },
-      })
-      return { clientOpId: op.clientOpId, status: 'applied', server: updated as never, reason: null }
+
+      // Guard atómico: el `where` exige que el status siga siendo DRAFT o SUBMITTED.
+      // Si entre la lectura de arriba y este update el tutor aprobó/rechazó el
+      // registro, Prisma lanza P2025 (registro no encontrado). Lo capturamos y
+      // devolvemos el mismo rechazo legible que ya usamos para esa rama.
+      try {
+        const updated = await db.hourLog.update({
+          where: {
+            id: Number(op.payload.id),
+            status: { in: [HourLogStatus.DRAFT, HourLogStatus.SUBMITTED] },
+          },
+          data: {
+            ...fields,
+            version: { increment: 1 },
+          },
+        })
+        return { clientOpId: op.clientOpId, status: 'applied', server: updated as never, reason: null }
+      } catch (err) {
+        // Capturamos P2025 tanto por `instanceof` como por `code`, porque algunos
+        // clientes de Prisma o builds minificados pueden romper el prototipo.
+        const isP2025 =
+          (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2025') ||
+          (typeof err === 'object' && err !== null && (err as { code?: string }).code === 'P2025')
+        if (isP2025) {
+          const current = await db.hourLog.findUnique({
+            where: { id: Number(op.payload.id) },
+          })
+          const status = current?.status
+          const reason =
+            status === HourLogStatus.APPROVED
+              ? 'el tutor aprobó este registro de horas mientras se procesaba la edición; no se puede editar'
+              : status === HourLogStatus.REJECTED
+                ? 'el tutor rechazó este registro de horas mientras se procesaba la edición; no se puede editar'
+                : 'el registro cambió de estado durante la edición'
+          return {
+            clientOpId: op.clientOpId,
+            status: 'rejected',
+            server: (current ?? existing) as unknown as Record<string, unknown>,
+            reason,
+          }
+        }
+        throw err
+      }
     }
 
     const deleted = await db.hourLog.update({

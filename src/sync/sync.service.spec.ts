@@ -252,4 +252,98 @@ describe('SyncService', () => {
     })
     expect(prisma.hourLog.update).not.toHaveBeenCalled()
   })
+
+  // E1-04 · Hardening tras revisión de Copilot: un payload.updatedAt no parseable
+  // (NaN) ya no puede saltarse el chequeo de conflicto por fecha inválida.
+  it('rejects offline update when payload.updatedAt is not a valid date', async () => {
+    prisma.hourLog.findUnique.mockResolvedValue({
+      id: 46,
+      placement: { studentId: 5 },
+      status: 'SUBMITTED',
+      updatedAt: new Date('2026-04-02T10:00:00.000Z'),
+    })
+
+    const result = await service.push(5, [
+      {
+        clientOpId: '66666666-4666-4666-8666-666666666666',
+        entity: 'hourLog',
+        op: 'update',
+        baseVersion: 1,
+        payload: {
+          id: 46,
+          placementId: 1,
+          date: '2026-04-02',
+          startTime: '08:00',
+          endTime: '12:00',
+          hours: 4,
+          activity: 'Soporte',
+          updatedAt: 'esto-no-es-una-fecha',
+        },
+      },
+    ])
+
+    expect(result.results[0]).toMatchObject({
+      status: 'rejected',
+      reason: 'updatedAt inválido en la operación',
+    })
+    expect(prisma.hourLog.update).not.toHaveBeenCalled()
+  })
+
+  // E1-04 · Hardening tras revisión de Copilot: el guard atómico en el `where`
+  // del update debe capturar el caso en que el tutor aprobó el registro entre
+  // la lectura inicial y el update.
+  it('rejects offline update with an atomic guard when the tutor resolves between read and write', async () => {
+    prisma.hourLog.findUnique
+      // primera lectura (status + updatedAt del servidor): SUBMITTED, aún editable
+      .mockResolvedValueOnce({
+        id: 47,
+        placement: { studentId: 5 },
+        status: 'SUBMITTED',
+        updatedAt: new Date('2026-04-02T10:00:00.000Z'),
+      })
+      // segunda lectura (tras P2025): el tutor ya lo aprobó
+      .mockResolvedValueOnce({
+        id: 47,
+        placement: { studentId: 5 },
+        status: 'APPROVED',
+        updatedAt: new Date('2026-04-02T10:30:00.000Z'),
+      })
+
+    const p2025 = new Error('No record was found') as Error & { code?: string }
+    p2025.code = 'P2025'
+    prisma.hourLog.update.mockRejectedValueOnce(p2025)
+
+    const result = await service.push(5, [
+      {
+        clientOpId: '77777777-4777-4777-8777-777777777777',
+        entity: 'hourLog',
+        op: 'update',
+        baseVersion: 1,
+        payload: {
+          id: 47,
+          placementId: 1,
+          date: '2026-04-02',
+          startTime: '08:00',
+          endTime: '12:00',
+          hours: 4,
+          activity: 'Soporte',
+          updatedAt: '2026-04-02T11:00:00.000Z',
+        },
+      },
+    ])
+
+    expect(result.results[0]).toMatchObject({
+      status: 'rejected',
+      reason: 'el tutor aprobó este registro de horas mientras se procesaba la edición; no se puede editar',
+    })
+    // el where del update debe exigir que el status siga siendo DRAFT/SUBMITTED
+    expect(prisma.hourLog.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: 47,
+          status: { in: ['DRAFT', 'SUBMITTED'] },
+        }),
+      }),
+    )
+  })
 })
