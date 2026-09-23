@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common'
-import type { Prisma } from '@prisma/client'
+import { HourLogStatus, type Prisma } from '@prisma/client'
 import { PrismaService } from '../prisma/prisma.service'
 import { type Checkpoint, decodeCheckpoint, encodeCheckpoint } from './checkpoint'
 import type { SyncOperationInput, SyncOperationResult } from './dto/push.dto'
@@ -168,7 +168,35 @@ export class SyncService {
     }
 
     if (op.op === 'update') {
-      // La actualización aplica los campos recibidos y avanza version.
+      // E1-04: si el tutor ya resolvió el registro (APPROVED/REJECTED), el servidor
+      // es autoridad sobre el estado y rechaza la edición offline del estudiante.
+      if (existing.status === HourLogStatus.APPROVED || existing.status === HourLogStatus.REJECTED) {
+        return {
+          clientOpId: op.clientOpId,
+          status: 'rejected',
+          server: existing as unknown as Record<string, unknown>,
+          reason:
+            existing.status === HourLogStatus.APPROVED
+              ? 'el tutor ya aprobó este registro de horas; no se puede editar'
+              : 'el tutor ya rechazó este registro de horas; no se puede editar',
+        }
+      }
+
+      // E1-04: ambos lados en DRAFT/SUBMITTED. Gana la edición más reciente.
+      // Comparamos el updatedAt del cliente (enviado en el payload) contra el del servidor.
+      const clientUpdatedAt = op.payload.updatedAt
+        ? new Date(String(op.payload.updatedAt))
+        : new Date(0)
+      const serverUpdatedAt = new Date(existing.updatedAt)
+      if (clientUpdatedAt.getTime() <= serverUpdatedAt.getTime()) {
+        return {
+          clientOpId: op.clientOpId,
+          status: 'rejected',
+          server: existing as unknown as Record<string, unknown>,
+          reason: 'existe una versión más reciente en el servidor',
+        }
+      }
+
       const fields = this.extractHourLogFields(op.payload as Record<string, unknown>)
       const updated = await db.hourLog.update({
         where: { id: Number(op.payload.id) },
