@@ -31,7 +31,9 @@ máquina, cambia `POSTGRES_PORT` y `DATABASE_URL` en `.env` antes de `docker com
 | Variable | Valor por defecto | Descripción |
 |---|---|---|
 | `DATABASE_URL` | (requerido) | Cadena de conexión PostgreSQL |
-| `JWT_SECRET` | (requerido) | Secreto para firmar JWTs |
+| `JWT_SECRET` | (requerido) | Secreto para firmar JWTs (sin fallback inseguro) |
+| `AUTH_ACCESS_TOKEN_TTL_SEC` | `900` | Tiempo de vida del access token en segundos (15 min) |
+| `AUTH_REFRESH_TOKEN_TTL_SEC` | `604800` | Tiempo de vida absoluto de la sesión en segundos (7 días) |
 | `PORT` | `3000` | Puerto donde escucha la API |
 | `CORS_ORIGIN` | `http://localhost:5173` | Origen permitido para requests desde el navegador (frontend Vite) |
 
