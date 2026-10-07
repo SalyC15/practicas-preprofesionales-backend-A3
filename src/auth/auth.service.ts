@@ -26,7 +26,17 @@ export class AuthService {
     password: string,
     presentedCookies?: Record<string, string>,
   ): Promise<InternalAuthResult> {
-    const user = await this.prisma.user.findUnique({ where: { email } })
+    const user = await this.prisma.user.findUnique({
+      where: { email },
+      select: {
+        id: true,
+        email: true,
+        password: true,
+        fullName: true,
+        role: true,
+        companyId: true,
+      },
+    })
     if (!user || !(await bcrypt.compare(password, user.password))) {
       throw new UnauthorizedException('credenciales inválidas')
     }
@@ -207,7 +217,16 @@ export class AuthService {
       throw new UnauthorizedException('solicitud de renovación inválida o ya procesada')
     }
 
-    const user = await this.prisma.user.findUnique({ where: { id: payload.sub } })
+    const user = await this.prisma.user.findUnique({
+      where: { id: payload.sub },
+      select: {
+        id: true,
+        email: true,
+        fullName: true,
+        role: true,
+        companyId: true,
+      },
+    })
     if (!user) {
       throw new UnauthorizedException('usuario no encontrado')
     }
