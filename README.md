@@ -37,6 +37,26 @@ máquina, cambia `POSTGRES_PORT` y `DATABASE_URL` en `.env` antes de `docker com
 | `PORT` | `3000` | Puerto donde escucha la API |
 | `CORS_ORIGIN` | `http://localhost:5173` | Origen permitido para requests desde el navegador (frontend Vite) |
 
+### Generación de `JWT_SECRET`
+
+La aplicación exige obligatoriamente la variable de entorno `JWT_SECRET` para firmar los tokens JWT y se niega a arrancar si falta o si se intenta utilizar un secreto por defecto inseguro.
+
+Para generar un secreto criptográficamente seguro con entropía adecuada (al menos 256 bits / 32 bytes):
+
+- Con OpenSSL:
+  ```bash
+  openssl rand -base64 32
+  ```
+- O con Node.js:
+  ```bash
+  node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+  ```
+
+Configura el valor generado en tu archivo `.env`:
+```env
+JWT_SECRET="<secreto-generado>"
+```
+
 Usuarios del seed (contraseña `yura1234` para todos):
 
 | Rol | Email |

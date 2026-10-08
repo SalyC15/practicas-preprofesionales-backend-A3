@@ -54,4 +54,45 @@ describe('AuthConfig', () => {
     process.env.AUTH_REFRESH_TOKEN_TTL_SEC = '3600' // not > 2 * 3600
     expect(() => AuthConfig.getRefreshTokenTtlSec()).toThrow('debe ser al menos el doble')
   })
+
+  describe('E3-04: Inicialización del sistema sin secreto de firma', () => {
+    it('falla al compilar el módulo de autenticación si falta JWT_SECRET con mensaje útil', async () => {
+      delete process.env.JWT_SECRET
+      const { AuthModule } = await import('./auth.module')
+      const { PrismaModule } = await import('../prisma/prisma.module')
+      const { Test } = await import('@nestjs/testing')
+
+      await expect(
+        Test.createTestingModule({
+          imports: [PrismaModule, AuthModule],
+        }).compile(),
+      ).rejects.toThrow('JWT_SECRET no configurado en las variables de entorno')
+    })
+
+    it('falla si JWT_SECRET usa el valor inseguro conocido de D-07', async () => {
+      process.env.JWT_SECRET = AUTH_DEFAULTS.INSECURE_SECRET_FALLBACK
+      const { AuthModule } = await import('./auth.module')
+      const { PrismaModule } = await import('../prisma/prisma.module')
+      const { Test } = await import('@nestjs/testing')
+
+      await expect(
+        Test.createTestingModule({
+          imports: [PrismaModule, AuthModule],
+        }).compile(),
+      ).rejects.toThrow('JWT_SECRET no puede usar el valor inseguro por defecto documentado en D-07')
+    })
+
+    it('arranca con normalidad cuando la variable de entorno JWT_SECRET está presente', async () => {
+      process.env.JWT_SECRET = 'valid-test-secret-at-least-32-chars-long'
+      const { AuthModule } = await import('./auth.module')
+      const { PrismaModule } = await import('../prisma/prisma.module')
+      const { Test } = await import('@nestjs/testing')
+
+      const module = await Test.createTestingModule({
+        imports: [PrismaModule, AuthModule],
+      }).compile()
+
+      expect(module).toBeDefined()
+    })
+  })
 })
