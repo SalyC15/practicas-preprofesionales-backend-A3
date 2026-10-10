@@ -31,7 +31,7 @@ Los comandos de la sección **Pruebas curl** son reproducciones pendientes de ej
 | 19 | `POST /api/hour-logs` | `STUDENT` | Sí; placement debe ser del estudiante y estar activo | Cola local, luego `src/offline/sync/push.ts` |
 | 20 | `GET /api/placements/:id/hour-logs` | Cualquier JWT | Sí; coordinador, estudiante asignado o tutor asignado | `src/offline/hooks/useHourLogs.ts` / páginas |
 | 21 | `GET /api/placements/:id/progress` | Cualquier JWT | Sí; mismo control de acceso al placement | `src/pages/MyPlacementPage.tsx` |
-| 22 | `PATCH /api/hour-logs/:id/review` | `TUTOR` | No (P13): valida estado del registro, pero no asignación del tutor al placement | `src/pages/ReviewHoursPage.tsx` |
+| 22 | `PATCH /api/hour-logs/:id/review` | `TUTOR` | Sí (E3-02); valida asignación del tutor al placement (devuelve 403 si es ajeno) | `src/pages/ReviewHoursPage.tsx` |
 | 23 | `POST /api/evaluations` | `TUTOR`, `COMPANY`, `STUDENT` | Sí; el servicio compara rol y sujeto con tutor/empresa/estudiante del placement | `src/api/evaluations.ts:submitEvaluation` |
 | 24 | `GET /api/placements/:id/evaluations` | Cualquier JWT | Sí; coordinador, estudiante o tutor del placement | Sin cliente específico encontrado |
 | 25 | `GET /api/sync/pull` | Cualquier JWT | Sí; devuelve placements asignados como estudiante o tutor | `src/offline/sync/pull.ts` |
@@ -125,7 +125,7 @@ Esperado seguro: `400`/`403` porque el usuario asignado no es tutor. Actual seg�
 curl.exe -i -X PATCH "$BASE/hour-logs/ID_LOG_SUBMITTED_B/review" -H "Authorization: Bearer $tutorA" -H 'Content-Type: application/json' -d '{"status":"REJECTED","note":"prueba de autorización"}'
 ```
 
-Esperado seguro: `403` si el placement pertenece a tutor B. Actual: el servicio comprueba existencia/estado del hour log y registra `reviewedById`, pero no consulta el tutor asignado. Usar registro SUBMITTED descartable.
+Esperado seguro: `403` si el placement pertenece a tutor B. Actual (resuelto en E3-02): el servicio valida que `placement.tutorId === reviewerId` y rechaza con `403 Forbidden` si no coincide. El curl que antes devolvía 200 ahora devuelve 403 y está cubierto por tests en `src/hour-log/hour-log.authorization.spec.ts` y `src/hour-log/hour-log.service.spec.ts`.
 
 ### P14 — repetición de idempotencia entre usuarios
 
