@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { PrismaService } from '../prisma/prisma.service'
 import type { SyncOperationInput } from './dto/push.dto'
@@ -8,6 +9,10 @@ describe('E1-03: Integración de idempotencia y prevención de duplicados', () =
   let service: SyncService
   let studentId: number
   let placementId: number
+  let companyId: number
+  let tutorId: number
+  let offerId: number
+  let applicationId: number
   const createdClientOpIds: string[] = []
 
   beforeAll(async () => {
@@ -15,85 +20,71 @@ describe('E1-03: Integración de idempotencia y prevención de duplicados', () =
     await prisma.onModuleInit()
     service = new SyncService(prisma)
 
-    // Si ya existe un placement activo (entorno local con seed), lo usamos
-    const existingPlacement = await prisma.placement.findFirst({
-      where: { status: 'ACTIVE' },
-    })
-
-    if (existingPlacement) {
-      studentId = existingPlacement.studentId
-      placementId = existingPlacement.id
-      return
-    }
-
-    // En CI (donde la base de datos corre limpia sin seed), creamos los registros necesarios
-    const timestamp = Date.now()
+    // Fixtures propios: reutilizar el primer placement/oferta hace que esta prueba
+    // pueda enlazar datos creados por otra suite, ya que Vitest ejecuta archivos en paralelo.
+    const suffix = randomUUID()
     const fakeAuthSecret = process.env.TEST_SECRET ?? 'dummy-secret-value'
 
-    let company = await prisma.company.findFirst()
-    if (!company) {
-      company = await prisma.company.create({
-        data: {
-          taxId: `179${timestamp.toString().slice(-7)}001`,
-          name: 'Empresa Test CI',
-          sector: 'Software',
-          contactEmail: `ci-${timestamp}@empresa.com`,
-        },
-      })
-    }
+    const company = await prisma.company.create({
+      data: {
+        taxId: `E103-${suffix}`,
+        name: 'Empresa Test E1-03',
+        sector: 'Software',
+        contactEmail: `e103-${suffix}@empresa.test`,
+      },
+    })
+    companyId = company.id
 
-    let tutor = await prisma.user.findFirst({ where: { role: 'TUTOR' } })
-    if (!tutor) {
-      tutor = await prisma.user.create({
-        data: {
-          email: `tutor-ci-${timestamp}@example.com`,
-          password: fakeAuthSecret,
-          fullName: 'Tutor CI',
-          role: 'TUTOR',
-        },
-      })
-    }
+    const tutor = await prisma.user.create({
+      data: {
+        email: `tutor-e103-${suffix}@example.test`,
+        password: fakeAuthSecret,
+        fullName: 'Tutor Test E1-03',
+        role: 'TUTOR',
+      },
+    })
+    tutorId = tutor.id
 
-    let offer = await prisma.offer.findFirst()
-    if (!offer) {
-      offer = await prisma.offer.create({
-        data: {
-          companyId: company.id,
-          title: 'Oferta Test CI',
-          description: 'Descripción test',
-          modality: 'PRESENCIAL',
-          seats: 5,
-          requiredHours: 240,
-          periodStart: new Date('2026-01-01'),
-          periodEnd: new Date('2026-12-31'),
-        },
-      })
-    }
+    const offer = await prisma.offer.create({
+      data: {
+        companyId,
+        title: 'Oferta Test E1-03',
+        description: 'Oferta aislada para la prueba de sincronización',
+        modality: 'PRESENCIAL',
+        seats: 5,
+        requiredHours: 240,
+        periodStart: new Date('2026-01-01'),
+        periodEnd: new Date('2026-12-31'),
+      },
+    })
+    offerId = offer.id
 
     const student = await prisma.user.create({
       data: {
-        email: `student-ci-${timestamp}@example.com`,
+        email: `student-e103-${suffix}@example.test`,
         password: fakeAuthSecret,
-        fullName: 'Estudiante Test CI',
+        fullName: 'Estudiante Test E1-03',
         role: 'STUDENT',
       },
     })
+    studentId = student.id
 
     const app = await prisma.application.create({
       data: {
-        offerId: offer.id,
-        studentId: student.id,
+        offerId,
+        studentId,
         motivation: 'Test motivación CI',
         status: 'ACCEPTED',
       },
     })
+    applicationId = app.id
 
     const newPlacement = await prisma.placement.create({
       data: {
-        applicationId: app.id,
-        studentId: student.id,
-        tutorId: tutor.id,
-        companyId: company.id,
+        applicationId,
+        studentId,
+        tutorId,
+        companyId,
         startDate: new Date('2026-03-01'),
         endDate: new Date('2026-07-31'),
         requiredHours: 240,
@@ -106,14 +97,29 @@ describe('E1-03: Integración de idempotencia y prevención de duplicados', () =
   })
 
   afterAll(async () => {
+    if (!prisma) return
+
     if (createdClientOpIds.length > 0) {
       await prisma.syncOperation.deleteMany({
         where: { clientOpId: { in: createdClientOpIds } },
       })
-      await prisma.hourLog.deleteMany({
-        where: { activity: { contains: 'E1-03' } },
-      })
     }
+
+    if (placementId !== undefined) {
+      await prisma.hourLog.deleteMany({
+        where: { placementId },
+      })
+      await prisma.document.deleteMany({ where: { placementId } })
+      await prisma.evaluation.deleteMany({ where: { placementId } })
+      await prisma.placement.deleteMany({ where: { id: placementId } })
+    }
+
+    if (applicationId !== undefined) await prisma.application.deleteMany({ where: { id: applicationId } })
+    if (offerId !== undefined) await prisma.offer.deleteMany({ where: { id: offerId } })
+    if (studentId !== undefined) await prisma.user.deleteMany({ where: { id: studentId } })
+    if (tutorId !== undefined) await prisma.user.deleteMany({ where: { id: tutorId } })
+    if (companyId !== undefined) await prisma.company.deleteMany({ where: { id: companyId } })
+
     await prisma.$disconnect()
   })
 
