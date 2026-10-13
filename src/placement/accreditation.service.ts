@@ -14,7 +14,11 @@ export class AccreditationService {
 
     const placements = await this.prisma.placement.findMany({
       where: { startDate: { gte: from, lt: to }, deletedAt: null },
-      include: { student: true, documents: true, evaluations: true },
+      include: {
+        student: { select: { fullName: true } },
+        documents: true,
+        evaluations: true,
+      },
     })
 
     const results: AccreditationResult[] = []
