@@ -3,9 +3,17 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApplicationService } from './application.service'
 
 const prisma = {
-  application: { create: vi.fn(), findUnique: vi.fn(), update: vi.fn(), findMany: vi.fn() },
+  application: {
+    create: vi.fn(),
+    findUnique: vi.fn(),
+    update: vi.fn(),
+    findMany: vi.fn(),
+    count: vi.fn(),
+  },
   offer: { findUnique: vi.fn() },
   user: { findUnique: vi.fn() },
+  $transaction: vi.fn((cb: (tx: typeof prisma) => unknown) => cb(prisma)),
+  $queryRaw: vi.fn(),
 }
 const offers = { acceptedCount: vi.fn() }
 
@@ -14,13 +22,14 @@ describe('ApplicationService', () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
+    prisma.$transaction.mockImplementation((cb: (tx: typeof prisma) => unknown) => cb(prisma))
     service = new ApplicationService(prisma as never, offers as never)
   })
 
   it('accepts an application when there are seats left', async () => {
     prisma.application.findUnique.mockResolvedValue({ id: 7, offerId: 1, status: 'SUBMITTED' })
-    prisma.offer.findUnique.mockResolvedValue({ id: 1, seats: 3, status: 'PUBLISHED' })
-    offers.acceptedCount.mockResolvedValue(2)
+    prisma.$queryRaw.mockResolvedValue([{ id: 1, seats: 3 }])
+    prisma.application.count.mockResolvedValue(2)
     prisma.application.update.mockImplementation(({ data }) => Promise.resolve({ id: 7, ...data }))
 
     const result = await service.decide(7, 'ACCEPTED' as never)
@@ -31,8 +40,8 @@ describe('ApplicationService', () => {
 
   it('rejects accepting when the offer is already full', async () => {
     prisma.application.findUnique.mockResolvedValue({ id: 7, offerId: 1, status: 'SUBMITTED' })
-    prisma.offer.findUnique.mockResolvedValue({ id: 1, seats: 3, status: 'PUBLISHED' })
-    offers.acceptedCount.mockResolvedValue(3)
+    prisma.$queryRaw.mockResolvedValue([{ id: 1, seats: 3 }])
+    prisma.application.count.mockResolvedValue(3)
 
     await expect(service.decide(7, 'ACCEPTED' as never)).rejects.toThrow(BadRequestException)
   })
