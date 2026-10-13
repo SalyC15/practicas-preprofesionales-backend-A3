@@ -70,28 +70,35 @@ export class ApplicationService {
   }
 
   async decide(id: number, status: ApplicationStatus, userId?: number, role?: Role) {
-    const application = await this.prisma.application.findUnique({ where: { id } })
-    if (!application) throw new NotFoundException('postulación no encontrada')
+    return this.prisma.$transaction(async (tx) => {
+      const application = await tx.application.findUnique({ where: { id } })
+      if (!application) throw new NotFoundException('postulación no encontrada')
 
-    if (userId !== undefined && role !== undefined) {
-      await this.assertOfferAccess(application.offerId, userId, role)
-    }
+      if (userId !== undefined && role !== undefined) {
+        await this.assertOfferAccess(application.offerId, userId, role)
+      }
 
-    if (application.status !== ApplicationStatus.SUBMITTED && application.status !== ApplicationStatus.INTERVIEW) {
-      throw new BadRequestException('la postulación ya fue decidida')
-    }
+      if (application.status !== ApplicationStatus.SUBMITTED && application.status !== ApplicationStatus.INTERVIEW) {
+        throw new BadRequestException('la postulación ya fue decidida')
+      }
 
-    if (status === ApplicationStatus.ACCEPTED) {
-      const offer = await this.prisma.offer.findUnique({ where: { id: application.offerId } })
-      if (!offer) throw new NotFoundException('oferta no encontrada')
-      // Verifica que la oferta todavía tenga cupos antes de aceptar la postulación.
-      const accepted = await this.offers.acceptedCount(application.offerId)
-      if (accepted >= offer.seats) throw new BadRequestException('la oferta ya no tiene cupos')
-    }
+      if (status === ApplicationStatus.ACCEPTED) {
+        const lockedOffers = await tx.$queryRaw<Array<{ id: number; seats: number }>>`
+          SELECT id, seats FROM "offers" WHERE id = ${application.offerId} FOR UPDATE
+        `
+        const offer = lockedOffers[0]
+        if (!offer) throw new NotFoundException('oferta no encontrada')
 
-    return this.prisma.application.update({
-      where: { id },
-      data: { status, decidedAt: new Date() },
+        const accepted = await tx.application.count({
+          where: { offerId: application.offerId, status: ApplicationStatus.ACCEPTED },
+        })
+        if (accepted >= offer.seats) throw new BadRequestException('la oferta ya no tiene cupos')
+      }
+
+      return tx.application.update({
+        where: { id },
+        data: { status, decidedAt: new Date() },
+      })
     })
   }
 }
