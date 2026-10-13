@@ -1,5 +1,5 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common'
-import { ApplicationStatus } from '@prisma/client'
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common'
+import { ApplicationStatus, Role } from '@prisma/client'
 import { OfferService } from '../offer/offer.service'
 import { PrismaService } from '../prisma/prisma.service'
 
@@ -26,8 +26,37 @@ export class ApplicationService {
     })
   }
 
+  /**
+   * E3-07: Verifica que quien consulta o decide postulaciones de una oferta sea
+   * la empresa dueña de la oferta o un coordinador.
+   */
+  async assertOfferAccess(offerId: number, userId: number, role: Role): Promise<void> {
+    const offer = await this.prisma.offer.findUnique({ where: { id: offerId } })
+    if (!offer) throw new NotFoundException('oferta no encontrada')
+
+    if (role === Role.COORDINATOR) return
+
+    if (role !== Role.COMPANY) {
+      throw new ForbiddenException('no tienes acceso a esta oferta')
+    }
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { companyId: true },
+    })
+
+    const allowed = user?.companyId !== null && user?.companyId !== undefined && user.companyId === offer.companyId
+    if (!allowed) {
+      throw new ForbiddenException('no tienes acceso a esta oferta')
+    }
+  }
+
   // D-04: N+1. Una consulta por la lista y otra por cada estudiante.
-  async listByOffer(offerId: number) {
+  async listByOffer(offerId: number, userId?: number, role?: Role) {
+    if (userId !== undefined && role !== undefined) {
+      await this.assertOfferAccess(offerId, userId, role)
+    }
+
     const applications = await this.prisma.application.findMany({ where: { offerId } })
     const rows = []
     for (const application of applications) {
@@ -40,9 +69,14 @@ export class ApplicationService {
     return rows
   }
 
-  async decide(id: number, status: ApplicationStatus) {
+  async decide(id: number, status: ApplicationStatus, userId?: number, role?: Role) {
     const application = await this.prisma.application.findUnique({ where: { id } })
     if (!application) throw new NotFoundException('postulación no encontrada')
+
+    if (userId !== undefined && role !== undefined) {
+      await this.assertOfferAccess(application.offerId, userId, role)
+    }
+
     if (application.status !== ApplicationStatus.SUBMITTED && application.status !== ApplicationStatus.INTERVIEW) {
       throw new BadRequestException('la postulación ya fue decidida')
     }

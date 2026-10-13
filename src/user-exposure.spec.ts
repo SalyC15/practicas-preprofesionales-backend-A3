@@ -381,5 +381,25 @@ describe('Protección contra regresión: Exposición de campos de usuario', () =
         select: { companyId: true },
       })
     })
+
+    it('ApplicationService.assertOfferAccess acota consulta de usuario a { companyId: true }', async () => {
+      const mockPrisma = {
+        offer: {
+          findUnique: vi.fn().mockResolvedValue({ id: 10, companyId: 77 }),
+        },
+        user: {
+          findUnique: vi.fn().mockResolvedValue({ companyId: 77 }),
+        },
+      }
+      const mockOffers = { acceptedCount: vi.fn() }
+      const service = new ApplicationService(mockPrisma as never, mockOffers as never)
+
+      await service.assertOfferAccess(10, 42, Role.COMPANY)
+
+      expect(mockPrisma.user.findUnique).toHaveBeenCalledWith({
+        where: { id: 42 },
+        select: { companyId: true },
+      })
+    })
   })
 })
