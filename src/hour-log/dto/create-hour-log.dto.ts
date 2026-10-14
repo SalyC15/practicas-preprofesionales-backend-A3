@@ -1,10 +1,9 @@
-import { Type } from 'class-transformer'
-import { IsDate, IsInt, IsString, Matches, Max, MaxLength, Min } from 'class-validator'
+import { IsDefined, IsInt, IsString, Matches, Max, MaxLength, Min } from 'class-validator'
 
 export class CreateHourLogDto {
   @IsInt() placementId!: number
 
-  @Type(() => Date) @IsDate() date!: Date
+  @IsDefined() date!: string | Date
 
   @Matches(/^([01]\d|2[0-3]):[0-5]\d$/) startTime!: string
 

@@ -1,5 +1,7 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common'
 import { HourLogStatus, PlacementStatus, Role } from '@prisma/client'
+import { CalendarDateError, getUtcCalendarDayDistance, validateHourLogCalendarDate } from '../common/calendar-date'
+import { InstitutionTimezoneConfig } from '../common/institution-timezone.config'
 import { PrismaService } from '../prisma/prisma.service'
 import type { CreateHourLogDto } from './dto/create-hour-log.dto'
 
@@ -7,7 +9,7 @@ import type { CreateHourLogDto } from './dto/create-hour-log.dto'
 // "god service". `create` valida el DTO, persiste el registro y dispara
 // una notificación al tutor; `review` maneja la máquina de estados de
 // aprobación; `approvedHours`/`progressReport`/`weeklySummary`/`exportRows`
-// agregan y transforman datos para reportes. Todo vive en el mismo archivo
+// agregan y transforman datos para reportes. Estas responsabilidades conviven
 // a propósito: no lo dividas en `HourLogValidationService`,
 // `HourLogNotificationService` ni `HourLogReportService`. El objetivo de
 // producto es que el equipo que reciba el template identifique el problema
@@ -15,7 +17,10 @@ import type { CreateHourLogDto } from './dto/create-hour-log.dto'
 // separado.
 @Injectable()
 export class HourLogService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly institutionTimezone: InstitutionTimezoneConfig = new InstitutionTimezoneConfig(),
+  ) {}
 
   /**
    * Registra una jornada de horas para el placement del estudiante.
@@ -45,11 +50,23 @@ export class HourLogService {
       throw new BadRequestException('la hora de inicio debe ser anterior a la de fin')
     }
 
-    // La fecha del registro llega desde el cliente y se persiste tal como fue recibida.
+    let normalizedDate: Date
+    try {
+      normalizedDate = validateHourLogCalendarDate(
+        dto.date,
+        placement,
+        this.institutionTimezone.timeZone,
+        this.institutionTimezone.now(),
+      ).utcMidnight
+    } catch (error) {
+      if (error instanceof CalendarDateError) throw new BadRequestException(error.message)
+      throw error
+    }
+
     const created = await this.prisma.hourLog.create({
       data: {
         placementId: dto.placementId,
-        date: dto.date,
+        date: normalizedDate,
         startTime: dto.startTime,
         endTime: dto.endTime,
         hours: dto.hours,
@@ -169,10 +186,7 @@ export class HourLogService {
     // No es un cálculo de negocio serio (no contempla feriados, licencias,
     // etc.) — es exactamente el tipo de atajo que un `HourLogReportService`
     // dedicado habría cuestionado en revisión de diseño.
-    const totalDays = Math.max(
-      1,
-      Math.ceil((placement.endDate.getTime() - placement.startDate.getTime()) / 86400000),
-    )
+    const totalDays = Math.max(1, getUtcCalendarDayDistance(placement.startDate, placement.endDate))
     const totalWeeks = Math.max(1, Math.ceil(totalDays / 7))
     const expectedHoursPerWeek = placement.requiredHours / totalWeeks
 
@@ -238,7 +252,7 @@ export class HourLogService {
   // pegada al resto de responsabilidades del servicio.
   private isoWeekLabel(date: Date): string {
     // Copiamos la fecha a UTC para no arrastrar el timezone del proceso.
-    const copy = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()))
+    const copy = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()))
 
     // Lunes = 1 ... domingo = 7, para poder mover la fecha al jueves de
     // la misma semana ISO (regla estándar de cálculo de semana ISO 8601).
