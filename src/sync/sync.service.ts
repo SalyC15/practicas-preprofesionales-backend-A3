@@ -1,5 +1,7 @@
 import { Injectable } from '@nestjs/common'
 import { HourLogStatus, Prisma, type Prisma as PrismaTypes } from '@prisma/client'
+import { validateHourLogCalendarDate } from '../common/calendar-date'
+import { InstitutionTimezoneConfig } from '../common/institution-timezone.config'
 import { PrismaService } from '../prisma/prisma.service'
 import { type Checkpoint, decodeCheckpoint, encodeCheckpoint } from './checkpoint'
 import type { SyncOperationInput, SyncOperationResult } from './dto/push.dto'
@@ -11,7 +13,10 @@ type DbClient = PrismaTypes.TransactionClient | PrismaService
 
 @Injectable()
 export class SyncService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly institutionTimezone: InstitutionTimezoneConfig = new InstitutionTimezoneConfig(),
+  ) {}
 
   async pull(userId: number, since: string | undefined, limit: number) {
     const cursor = decodeCheckpoint(since)
@@ -164,14 +169,38 @@ export class SyncService {
     return fn(this.prisma as unknown as PrismaTypes.TransactionClient)
   }
 
-  private extractHourLogFields(payload: Record<string, unknown>) {
+  private normalizeHourLogDate(input: unknown, placement: { startDate: Date; endDate: Date | null }): Date {
+    return validateHourLogCalendarDate(
+      input as string | Date,
+      placement,
+      this.institutionTimezone.timeZone,
+      this.institutionTimezone.now(),
+    ).utcMidnight
+  }
+
+  private extractHourLogFields(payload: Record<string, unknown>, placement: { startDate: Date; endDate: Date | null }) {
     return {
-      date: new Date(String(payload.date)),
+      date: this.normalizeHourLogDate(payload.date, placement),
       startTime: String(payload.startTime),
       endTime: String(payload.endTime),
       hours: Number(payload.hours),
       activity: String(payload.activity),
     }
+  }
+
+  private extractHourLogUpdateFields(
+    payload: Record<string, unknown>,
+    placement: { startDate: Date; endDate: Date | null },
+  ): Record<string, unknown> {
+    const fields: Record<string, unknown> = {}
+    if (Object.prototype.hasOwnProperty.call(payload, 'date')) {
+      fields.date = this.normalizeHourLogDate(payload.date, placement)
+    }
+    if (Object.prototype.hasOwnProperty.call(payload, 'startTime')) fields.startTime = String(payload.startTime)
+    if (Object.prototype.hasOwnProperty.call(payload, 'endTime')) fields.endTime = String(payload.endTime)
+    if (Object.prototype.hasOwnProperty.call(payload, 'hours')) fields.hours = Number(payload.hours)
+    if (Object.prototype.hasOwnProperty.call(payload, 'activity')) fields.activity = String(payload.activity)
+    return fields
   }
 
   private async applyOperation(
@@ -189,7 +218,7 @@ export class SyncService {
         return { clientOpId: op.clientOpId, status: 'rejected', server: null, reason: 'el placement no pertenece al usuario' }
       }
 
-      const fields = this.extractHourLogFields(op.payload as Record<string, unknown>)
+      const fields = this.extractHourLogFields(op.payload as Record<string, unknown>, placement)
       const created = await db.hourLog.create({
         data: {
           placementId: Number(op.payload.placementId),
@@ -259,7 +288,7 @@ export class SyncService {
         }
       }
 
-      const fields = this.extractHourLogFields(op.payload as Record<string, unknown>)
+      const fields = this.extractHourLogUpdateFields(op.payload as Record<string, unknown>, existing.placement)
 
       // Guard atómico: el `where` exige que el status siga siendo DRAFT o SUBMITTED.
       // Si entre la lectura de arriba y este update el tutor aprobó/rechazó el
