@@ -105,7 +105,7 @@ async function main() {
     const rows = []
     for (let h = 0; h < HOURLOGS_PER_PLACEMENT; h++) {
       const day = new Date('2026-03-02')
-      day.setDate(day.getDate() + h * 3)
+      day.setUTCDate(day.getUTCDate() + h * 3)
       rows.push({
         placementId: placement.id,
         date: day,
