@@ -9,7 +9,7 @@ import type { CreateHourLogDto } from './dto/create-hour-log.dto'
 // "god service". `create` valida el DTO, persiste el registro y dispara
 // una notificación al tutor; `review` maneja la máquina de estados de
 // aprobación; `approvedHours`/`progressReport`/`weeklySummary`/`exportRows`
-// agregan y transforman datos para reportes. Todo vive en el mismo archivo
+// agregan y transforman datos para reportes. Estas responsabilidades conviven
 // a propósito: no lo dividas en `HourLogValidationService`,
 // `HourLogNotificationService` ni `HourLogReportService`. El objetivo de
 // producto es que el equipo que reciba el template identifique el problema
