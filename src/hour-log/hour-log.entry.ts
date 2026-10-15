@@ -1,5 +1,5 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common'
-import { HourLogStatus, PlacementStatus } from '@prisma/client'
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common'
+import { HourLogStatus, PlacementStatus, Role } from '@prisma/client'
 import { CalendarDateError, validateHourLogCalendarDate } from '../common/calendar-date'
 import { InstitutionTimezoneConfig } from '../common/institution-timezone.config'
 import { PrismaService } from '../prisma/prisma.service'
@@ -58,9 +58,20 @@ export class HourLogEntry {
     return created
   }
 
-  async review(id: number, status: HourLogStatus, reviewerId: number, note?: string) {
-    const log = await this.prisma.hourLog.findUnique({ where: { id } })
+  async review(id: number, status: HourLogStatus, reviewerId: number, note?: string, reviewerRole?: Role) {
+    const log = await this.prisma.hourLog.findUnique({
+      where: { id },
+      include: { placement: true },
+    })
     if (!log) throw new NotFoundException('registro de horas no encontrado')
+    if (!log.placement) throw new NotFoundException('placement no encontrado')
+
+    const isAssignedTutor = log.placement.tutorId === reviewerId
+    const isCoordinator = reviewerRole === Role.COORDINATOR
+    if (!isAssignedTutor && !isCoordinator) {
+      throw new ForbiddenException('solo el tutor asignado puede revisar este registro de horas')
+    }
+
     if (log.status !== HourLogStatus.SUBMITTED) {
       throw new BadRequestException('solo se revisan registros en SUBMITTED')
     }

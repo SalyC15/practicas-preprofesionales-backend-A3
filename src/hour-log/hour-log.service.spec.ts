@@ -1,4 +1,5 @@
-import { BadRequestException } from '@nestjs/common'
+import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common'
+import { HourLogStatus, Role } from '@prisma/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { HourLogService } from './hour-log.service'
 
@@ -166,17 +167,18 @@ describe('HourLogService', () => {
     ).rejects.toThrow(BadRequestException)
   })
 
-  it('approves a submitted hour log without writing its stored date', async () => {
+  it('approves a submitted hour log when reviewer is the assigned tutor without writing its stored date', async () => {
     prisma.hourLog.findUnique.mockResolvedValue({
       id: 99,
       date: new Date('2026-10-13T23:30:00.000Z'),
       placementId: 1,
       status: 'SUBMITTED',
       version: 1,
+      placement: { id: 1, tutorId: 7 },
     })
     prisma.hourLog.update.mockImplementation(({ data }) => Promise.resolve({ id: 99, ...data }))
 
-    const result = await service.review(99, 'APPROVED' as never, 7, 'ok')
+    const result = await service.review(99, HourLogStatus.APPROVED, 7, 'ok', Role.TUTOR)
 
     expect(result.status).toBe('APPROVED')
     expect(result.reviewedById).toBe(7)
@@ -229,5 +231,27 @@ describe('HourLogService', () => {
       if (previousTimeZone === undefined) delete process.env.TZ
       else process.env.TZ = previousTimeZone
     }
+  })
+  it('rejects approval when tutor is not assigned to the placement', async () => {
+    prisma.hourLog.findUnique.mockResolvedValue({ id: 99, placementId: 1, status: 'SUBMITTED', version: 1, placement: { id: 1, tutorId: 7 } })
+    await expect(service.review(99, HourLogStatus.APPROVED, 999, 'intento ajeno', Role.TUTOR)).rejects.toThrow(ForbiddenException)
+    expect(prisma.hourLog.update).not.toHaveBeenCalled()
+  })
+
+  it('allows coordination to review hour logs', async () => {
+    prisma.hourLog.findUnique.mockResolvedValue({ id: 99, placementId: 1, status: 'SUBMITTED', version: 1, placement: { id: 1, tutorId: 7 } })
+    prisma.hourLog.update.mockImplementation(({ data }) => Promise.resolve({ id: 99, ...data }))
+    const result = await service.review(99, HourLogStatus.APPROVED, 1, 'aprobado', Role.COORDINATOR)
+    expect(result.status).toBe('APPROVED')
+  })
+
+  it('throws NotFoundException when hour log does not exist', async () => {
+    prisma.hourLog.findUnique.mockResolvedValue(null)
+    await expect(service.review(999, HourLogStatus.APPROVED, 7, 'ok', Role.TUTOR)).rejects.toThrow(NotFoundException)
+  })
+
+  it('throws BadRequestException when hour log is not submitted', async () => {
+    prisma.hourLog.findUnique.mockResolvedValue({ id: 99, placementId: 1, status: 'DRAFT', version: 1, placement: { id: 1, tutorId: 7 } })
+    await expect(service.review(99, HourLogStatus.APPROVED, 7, 'ok', Role.TUTOR)).rejects.toThrow(BadRequestException)
   })
 })

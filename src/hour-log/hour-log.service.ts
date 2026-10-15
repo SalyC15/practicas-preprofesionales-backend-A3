@@ -41,8 +41,8 @@ export class HourLogService {
     return this.access.listForPlacement(placementId)
   }
 
-  review(id: number, status: HourLogStatus, reviewerId: number, note?: string) {
-    return this.entry.review(id, status, reviewerId, note)
+  review(id: number, status: HourLogStatus, reviewerId: number, note?: string, reviewerRole?: Role) {
+    return this.entry.review(id, status, reviewerId, note, reviewerRole)
   }
 
   approvedHours(placementId: number) {
