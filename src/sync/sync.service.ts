@@ -5,6 +5,7 @@ import { InstitutionTimezoneConfig } from '../common/institution-timezone.config
 import { PrismaService } from '../prisma/prisma.service'
 import { type Checkpoint, decodeCheckpoint, encodeCheckpoint } from './checkpoint'
 import type { SyncOperationInput, SyncOperationResult } from './dto/push.dto'
+import { validateHourLogHours, validateHourLogTime, validateHourLogTimes } from '../hour-log/hour-log.validation'
 
 // `Prisma` (valor) se usa para `Prisma.PrismaClientKnownRequestError`; el tipo del
 // cliente de transacción entra como `PrismaTypes` para no chocar con el namespace.
@@ -179,11 +180,17 @@ export class SyncService {
   }
 
   private extractHourLogFields(payload: Record<string, unknown>, placement: { startDate: Date; endDate: Date | null }) {
+    const startTime = String(payload.startTime)
+    const endTime = String(payload.endTime)
+    const hours = Number(payload.hours)
+    validateHourLogHours(hours)
+    validateHourLogTimes({ startTime, endTime })
+
     return {
       date: this.normalizeHourLogDate(payload.date, placement),
-      startTime: String(payload.startTime),
-      endTime: String(payload.endTime),
-      hours: Number(payload.hours),
+      startTime,
+      endTime,
+      hours,
       activity: String(payload.activity),
     }
   }
@@ -196,9 +203,23 @@ export class SyncService {
     if (Object.prototype.hasOwnProperty.call(payload, 'date')) {
       fields.date = this.normalizeHourLogDate(payload.date, placement)
     }
-    if (Object.prototype.hasOwnProperty.call(payload, 'startTime')) fields.startTime = String(payload.startTime)
-    if (Object.prototype.hasOwnProperty.call(payload, 'endTime')) fields.endTime = String(payload.endTime)
-    if (Object.prototype.hasOwnProperty.call(payload, 'hours')) fields.hours = Number(payload.hours)
+    if (Object.prototype.hasOwnProperty.call(payload, 'startTime')) {
+      const startTime = String(payload.startTime)
+      fields.startTime = startTime
+      validateHourLogTime(startTime)
+    }
+    if (Object.prototype.hasOwnProperty.call(payload, 'endTime')) {
+      const endTime = String(payload.endTime)
+      fields.endTime = endTime
+      validateHourLogTime(endTime)
+    }
+    if (Object.prototype.hasOwnProperty.call(payload, 'hours')) {
+      fields.hours = Number(payload.hours)
+      validateHourLogHours(fields.hours as number)
+    }
+    if (typeof fields.startTime === 'string' && typeof fields.endTime === 'string') {
+      validateHourLogTimes({ startTime: fields.startTime, endTime: fields.endTime })
+    }
     if (Object.prototype.hasOwnProperty.call(payload, 'activity')) fields.activity = String(payload.activity)
     return fields
   }

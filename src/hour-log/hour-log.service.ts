@@ -4,6 +4,7 @@ import { CalendarDateError, getUtcCalendarDayDistance, validateHourLogCalendarDa
 import { InstitutionTimezoneConfig } from '../common/institution-timezone.config'
 import { PrismaService } from '../prisma/prisma.service'
 import type { CreateHourLogDto } from './dto/create-hour-log.dto'
+import { HourLogValidationError, validateHourLogInput } from './hour-log.validation'
 
 // D-02 (deuda sembrada, documentada a propósito): este servicio es un
 // "god service". `create` valida el DTO, persiste el registro y dispara
@@ -40,14 +41,11 @@ export class HourLogService {
       throw new BadRequestException('el placement no está activo')
     }
 
-    // D-06 (copia 2): la misma validación que el DTO, con tope 10 en vez de 12.
-    if (dto.hours <= 0 || dto.hours > 10) {
-      throw new BadRequestException('las horas deben estar entre 0 y 10')
-    }
-    const [startHour, startMinute] = dto.startTime.split(':').map(Number)
-    const [endHour, endMinute] = dto.endTime.split(':').map(Number)
-    if (startHour * 60 + startMinute >= endHour * 60 + endMinute) {
-      throw new BadRequestException('la hora de inicio debe ser anterior a la de fin')
+    try {
+      validateHourLogInput(dto)
+    } catch (error) {
+      if (error instanceof HourLogValidationError) throw new BadRequestException(error.message)
+      throw error
     }
 
     let normalizedDate: Date
