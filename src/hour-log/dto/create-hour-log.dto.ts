@@ -1,16 +1,20 @@
 import { IsDefined, IsInt, IsString, Matches, Max, MaxLength, Min } from 'class-validator'
+import {
+  HOUR_LOG_TIME_PATTERN,
+  MAX_HOUR_LOG_HOURS,
+  MIN_HOUR_LOG_HOURS,
+} from '../hour-log.validation'
 
 export class CreateHourLogDto {
   @IsInt() placementId!: number
 
   @IsDefined() date!: string | Date
 
-  @Matches(/^([01]\d|2[0-3]):[0-5]\d$/) startTime!: string
+  @Matches(HOUR_LOG_TIME_PATTERN) startTime!: string
 
-  @Matches(/^([01]\d|2[0-3]):[0-5]\d$/) endTime!: string
+  @Matches(HOUR_LOG_TIME_PATTERN) endTime!: string
 
-  // D-06 (copia 1): tope 12.
-  @Min(0.5) @Max(12) hours!: number
+  @Min(MIN_HOUR_LOG_HOURS) @Max(MAX_HOUR_LOG_HOURS) hours!: number
 
   @IsString() @MaxLength(500) activity!: string
 }
