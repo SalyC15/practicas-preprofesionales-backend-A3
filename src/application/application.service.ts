@@ -51,22 +51,18 @@ export class ApplicationService {
     }
   }
 
-  // D-04: N+1. Una consulta por la lista y otra por cada estudiante.
+  // E2-03: carga los estudiantes en conjunto; el SQL no crece por candidato.
   async listByOffer(offerId: number, userId?: number, role?: Role) {
     if (userId !== undefined && role !== undefined) {
       await this.assertOfferAccess(offerId, userId, role)
     }
 
-    const applications = await this.prisma.application.findMany({ where: { offerId } })
-    const rows = []
-    for (const application of applications) {
-      const student = await this.prisma.user.findUnique({
-        where: { id: application.studentId },
-        select: { id: true, email: true, fullName: true },
-      })
-      rows.push({ ...application, student })
-    }
-    return rows
+    return this.prisma.application.findMany({
+      where: { offerId },
+      include: {
+        student: { select: { id: true, email: true, fullName: true } },
+      },
+    })
   }
 
   async decide(id: number, status: ApplicationStatus, userId?: number, role?: Role) {

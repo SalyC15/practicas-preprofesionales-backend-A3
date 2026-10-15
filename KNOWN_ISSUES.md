@@ -32,12 +32,13 @@ Cero. Lo hicimos en la última semana y no alcanzamos. Es el módulo que más ba
 del proyecto. Si vas a tocar rúbricas o scores, escribe los tests primero — nadie sabe qué se
 rompe.
 
-## D-04 · La lista de postulaciones va lenta
+## D-04 · La lista de postulaciones va lenta (resuelto en E2-03)
 
 `src/application/application.service.ts`, método `listByOffer`.
 
-Con menos de 200 postulaciones no se nota. Arriba de eso, la pantalla de la empresa tarda
-varios segundos. Sospechamos que es cómo traemos los estudiantes, pero no lo medimos.
+Se eliminó la consulta por candidato mediante la carga conjunta de estudiantes.
+El listado ejecuta dos consultas independientemente del número de postulaciones.
+Mediciones y reproducción: [E2-03](docs/E2-03-rendimiento-postulaciones.md).
 
 ## D-05 · `calculateAccreditationStatus` da miedo tocarla
 

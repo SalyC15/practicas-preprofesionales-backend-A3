@@ -245,21 +245,18 @@ describe('Protección contra regresión: Exposición de campos de usuario', () =
       const service = new ApplicationService(mockPrisma as never, mockOffers as never)
 
       mockPrisma.application.findMany.mockResolvedValue([
-        { id: 1, offerId: 5, studentId: 101, status: 'SUBMITTED', motivation: 'Motivación 1' },
+        { id: 1, offerId: 5, studentId: 101, status: 'SUBMITTED', motivation: 'Motivación 1',
+          student: { id: 101, email: 'postulante@uni.edu', fullName: 'Postulante Uno' } },
       ])
-      mockPrisma.user.findUnique.mockResolvedValue({
-        id: 101,
-        email: 'postulante@uni.edu',
-        fullName: 'Postulante Uno',
-      })
 
       const rows = await service.listByOffer(5)
 
       // 1. Verificación de consulta acotada
-      expect(mockPrisma.user.findUnique).toHaveBeenCalledWith({
-        where: { id: 101 },
-        select: { id: true, email: true, fullName: true },
+      expect(mockPrisma.application.findMany).toHaveBeenCalledWith({
+        where: { offerId: 5 },
+        include: { student: { select: { id: true, email: true, fullName: true } } },
       })
+      expect(mockPrisma.user.findUnique).not.toHaveBeenCalled()
 
       // 2. Forma de la respuesta y campo student
       expect(rows).toHaveLength(1)
