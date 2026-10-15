@@ -36,6 +36,7 @@ máquina, cambia `POSTGRES_PORT` y `DATABASE_URL` en `.env` antes de `docker com
 | `AUTH_REFRESH_TOKEN_TTL_SEC` | `604800` | Tiempo de vida absoluto de la sesión en segundos (7 días) |
 | `PORT` | `3000` | Puerto donde escucha la API |
 | `CORS_ORIGIN` | `http://localhost:5173` | Origen permitido para requests desde el navegador (frontend Vite) |
+| `INSTITUTION_TIMEZONE` | `America/Guayaquil` | Zona horaria institucional usada para normalizar y validar las fechas calendario de `HourLog` |
 
 ### Generación de `JWT_SECRET`
 
@@ -98,6 +99,12 @@ Company ──< Offer ──< Application >── User(student)
 
 Los modelos marcados ◆ son sincronizables offline: llevan `version`, `updatedAt` y
 `deletedAt`.
+
+### Fechas calendario de horas
+
+`HourLog.date` representa un día calendario (`YYYY-MM-DD`), no un instante. REST conserva la cadena recibida; las cadenas de fecha pura no cambian de día y los timestamps ISO con zona/offset (o valores `Date` internos) se convierten a la fecha de `INSTITUTION_TIMEZONE`. El valor guardado se representa a medianoche UTC. La zona por defecto es `America/Guayaquil`; una zona inválida detiene el arranque.
+
+Las fechas de Placement se comparan por sus componentes UTC almacenados. La fecha es inclusiva entre inicio y fin, y no puede ser posterior al día actual de la institución. Las lecturas/listados/exportaciones existentes conservan la interpretación UTC; los registros existentes no se reescriben. Para auditar sin modificar filas, ejecuta `pnpm exec tsx prisma/calendar-date-audit.ts` contra una base autorizada.
 
 Máquinas de estado:
 

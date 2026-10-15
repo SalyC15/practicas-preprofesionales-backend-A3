@@ -1,8 +1,11 @@
 import { Injectable } from '@nestjs/common'
 import { HourLogStatus, Prisma, type Prisma as PrismaTypes } from '@prisma/client'
+import { validateHourLogCalendarDate } from '../common/calendar-date'
+import { InstitutionTimezoneConfig } from '../common/institution-timezone.config'
 import { PrismaService } from '../prisma/prisma.service'
 import { type Checkpoint, decodeCheckpoint, encodeCheckpoint } from './checkpoint'
 import type { SyncOperationInput, SyncOperationResult } from './dto/push.dto'
+import { validateHourLogHours, validateHourLogTime, validateHourLogTimes } from '../hour-log/hour-log.validation'
 
 // `Prisma` (valor) se usa para `Prisma.PrismaClientKnownRequestError`; el tipo del
 // cliente de transacción entra como `PrismaTypes` para no chocar con el namespace.
@@ -11,7 +14,10 @@ type DbClient = PrismaTypes.TransactionClient | PrismaService
 
 @Injectable()
 export class SyncService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly institutionTimezone: InstitutionTimezoneConfig = new InstitutionTimezoneConfig(),
+  ) {}
 
   async pull(userId: number, since: string | undefined, limit: number) {
     const cursor = decodeCheckpoint(since)
@@ -164,14 +170,58 @@ export class SyncService {
     return fn(this.prisma as unknown as PrismaTypes.TransactionClient)
   }
 
-  private extractHourLogFields(payload: Record<string, unknown>) {
+  private normalizeHourLogDate(input: unknown, placement: { startDate: Date; endDate: Date | null }): Date {
+    return validateHourLogCalendarDate(
+      input as string | Date,
+      placement,
+      this.institutionTimezone.timeZone,
+      this.institutionTimezone.now(),
+    ).utcMidnight
+  }
+
+  private extractHourLogFields(payload: Record<string, unknown>, placement: { startDate: Date; endDate: Date | null }) {
+    const startTime = String(payload.startTime)
+    const endTime = String(payload.endTime)
+    const hours = Number(payload.hours)
+    validateHourLogHours(hours)
+    validateHourLogTimes({ startTime, endTime })
+
     return {
-      date: new Date(String(payload.date)),
-      startTime: String(payload.startTime),
-      endTime: String(payload.endTime),
-      hours: Number(payload.hours),
+      date: this.normalizeHourLogDate(payload.date, placement),
+      startTime,
+      endTime,
+      hours,
       activity: String(payload.activity),
     }
+  }
+
+  private extractHourLogUpdateFields(
+    payload: Record<string, unknown>,
+    placement: { startDate: Date; endDate: Date | null },
+  ): Record<string, unknown> {
+    const fields: Record<string, unknown> = {}
+    if (Object.prototype.hasOwnProperty.call(payload, 'date')) {
+      fields.date = this.normalizeHourLogDate(payload.date, placement)
+    }
+    if (Object.prototype.hasOwnProperty.call(payload, 'startTime')) {
+      const startTime = String(payload.startTime)
+      fields.startTime = startTime
+      validateHourLogTime(startTime)
+    }
+    if (Object.prototype.hasOwnProperty.call(payload, 'endTime')) {
+      const endTime = String(payload.endTime)
+      fields.endTime = endTime
+      validateHourLogTime(endTime)
+    }
+    if (Object.prototype.hasOwnProperty.call(payload, 'hours')) {
+      fields.hours = Number(payload.hours)
+      validateHourLogHours(fields.hours as number)
+    }
+    if (typeof fields.startTime === 'string' && typeof fields.endTime === 'string') {
+      validateHourLogTimes({ startTime: fields.startTime, endTime: fields.endTime })
+    }
+    if (Object.prototype.hasOwnProperty.call(payload, 'activity')) fields.activity = String(payload.activity)
+    return fields
   }
 
   private async applyOperation(
@@ -182,24 +232,36 @@ export class SyncService {
     if (op.entity !== 'hourLog') {
       return { clientOpId: op.clientOpId, status: 'rejected', server: null, reason: 'entidad no sincronizable desde el cliente' }
     }
+    if (op.op === 'create') return this.applyCreateOperation(userId, op, db)
+    return this.applyExistingOperation(userId, op, db)
+  }
 
-    if (op.op === 'create') {
-      const placement = await db.placement.findUnique({ where: { id: Number(op.payload.placementId) } })
-      if (!placement || placement.studentId !== userId) {
-        return { clientOpId: op.clientOpId, status: 'rejected', server: null, reason: 'el placement no pertenece al usuario' }
-      }
-
-      const fields = this.extractHourLogFields(op.payload as Record<string, unknown>)
-      const created = await db.hourLog.create({
-        data: {
-          placementId: Number(op.payload.placementId),
-          ...fields,
-          status: 'SUBMITTED',
-        },
-      })
-      return { clientOpId: op.clientOpId, status: 'applied', server: created as never, reason: null }
+  private async applyCreateOperation(
+    userId: number,
+    op: SyncOperationInput,
+    db: DbClient,
+  ): Promise<SyncOperationResult> {
+    const placement = await db.placement.findUnique({ where: { id: Number(op.payload.placementId) } })
+    if (!placement || placement.studentId !== userId) {
+      return { clientOpId: op.clientOpId, status: 'rejected', server: null, reason: 'el placement no pertenece al usuario' }
     }
 
+    const fields = this.extractHourLogFields(op.payload as Record<string, unknown>, placement)
+    const created = await db.hourLog.create({
+      data: {
+        placementId: Number(op.payload.placementId),
+        ...fields,
+        status: 'SUBMITTED',
+      },
+    })
+    return { clientOpId: op.clientOpId, status: 'applied', server: created as never, reason: null }
+  }
+
+  private async applyExistingOperation(
+    userId: number,
+    op: SyncOperationInput,
+    db: DbClient,
+  ): Promise<SyncOperationResult> {
     const existing = await db.hourLog.findUnique({
       where: { id: Number(op.payload.id) },
       include: { placement: true },
@@ -208,107 +270,132 @@ export class SyncService {
       return { clientOpId: op.clientOpId, status: 'rejected', server: null, reason: 'el registro no pertenece al usuario' }
     }
 
-    if (op.op === 'update') {
-      // E1-04: si el tutor ya resolvió el registro (APPROVED/REJECTED), el servidor
-      // es autoridad sobre el estado y rechaza la edición offline del estudiante.
-      if (existing.status === HourLogStatus.APPROVED || existing.status === HourLogStatus.REJECTED) {
-        return {
-          clientOpId: op.clientOpId,
-          status: 'rejected',
-          server: existing as unknown as Record<string, unknown>,
-          reason:
-            existing.status === HourLogStatus.APPROVED
-              ? 'el tutor ya aprobó este registro de horas; no se puede editar'
-              : 'el tutor ya rechazó este registro de horas; no se puede editar',
-        }
-      }
-
-      // E1-04: ambos lados en DRAFT/SUBMITTED. Gana la edición más reciente.
-      // Primero validamos que el payload.traiga un updatedAt parseable: sin esto,
-      // un string inválido produce Invalid Date (getTime() === NaN) y la comparación
-      // con el servidor devuelve false, dejando pasar la edición por un fallo
-      // silencioso. Si no hay updatedAt o no se puede parsear, rechazamos.
-      const rawClientUpdatedAt = op.payload.updatedAt
-      const clientUpdatedAt =
-        typeof rawClientUpdatedAt === 'string' || rawClientUpdatedAt instanceof Date
-          ? new Date(String(rawClientUpdatedAt))
-          : null
-      if (!clientUpdatedAt || Number.isNaN(clientUpdatedAt.getTime())) {
-        return {
-          clientOpId: op.clientOpId,
-          status: 'rejected',
-          server: existing as unknown as Record<string, unknown>,
-          reason: 'updatedAt inválido en la operación',
-        }
-      }
-      const serverUpdatedAt = new Date(existing.updatedAt)
-      if (Number.isNaN(serverUpdatedAt.getTime())) {
-        return {
-          clientOpId: op.clientOpId,
-          status: 'rejected',
-          server: existing as unknown as Record<string, unknown>,
-          reason: 'updatedAt inválido en el servidor',
-        }
-      }
-      if (clientUpdatedAt.getTime() <= serverUpdatedAt.getTime()) {
-        return {
-          clientOpId: op.clientOpId,
-          status: 'rejected',
-          server: existing as unknown as Record<string, unknown>,
-          reason: 'existe una versión más reciente en el servidor',
-        }
-      }
-
-      const fields = this.extractHourLogFields(op.payload as Record<string, unknown>)
-
-      // Guard atómico: el `where` exige que el status siga siendo DRAFT o SUBMITTED.
-      // Si entre la lectura de arriba y este update el tutor aprobó/rechazó el
-      // registro, Prisma lanza P2025 (registro no encontrado). Lo capturamos y
-      // devolvemos el mismo rechazo legible que ya usamos para esa rama.
-      try {
-        const updated = await db.hourLog.update({
-          where: {
-            id: Number(op.payload.id),
-            status: { in: [HourLogStatus.DRAFT, HourLogStatus.SUBMITTED] },
-          },
-          data: {
-            ...fields,
-            version: { increment: 1 },
-          },
-        })
-        return { clientOpId: op.clientOpId, status: 'applied', server: updated as never, reason: null }
-      } catch (err) {
-        // Capturamos P2025 tanto por `instanceof` como por `code`, porque algunos
-        // clientes de Prisma o builds minificados pueden romper el prototipo.
-        const isP2025 =
-          (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2025') ||
-          (typeof err === 'object' && err !== null && (err as { code?: string }).code === 'P2025')
-        if (isP2025) {
-          const current = await db.hourLog.findUnique({
-            where: { id: Number(op.payload.id) },
-          })
-          const status = current?.status
-          const reason =
-            status === HourLogStatus.APPROVED
-              ? 'el tutor aprobó este registro de horas mientras se procesaba la edición; no se puede editar'
-              : status === HourLogStatus.REJECTED
-                ? 'el tutor rechazó este registro de horas mientras se procesaba la edición; no se puede editar'
-                : 'el registro cambió de estado durante la edición'
-          return {
-            clientOpId: op.clientOpId,
-            status: 'rejected',
-            server: (current ?? existing) as unknown as Record<string, unknown>,
-            reason,
-          }
-        }
-        throw err
-      }
-    }
+    if (op.op === 'update') return this.applyUpdateOperation(op, existing, db)
 
     const deleted = await db.hourLog.update({
       where: { id: Number(op.payload.id) },
       data: { deletedAt: new Date(), version: { increment: 1 } },
     })
     return { clientOpId: op.clientOpId, status: 'applied', server: deleted as never, reason: null }
+  }
+
+  private async applyUpdateOperation(
+    op: SyncOperationInput,
+    existing: {
+      id: number
+      placement: { studentId: number; startDate: Date; endDate: Date | null }
+      status: HourLogStatus
+      updatedAt: Date
+    },
+    db: DbClient,
+  ): Promise<SyncOperationResult> {
+    // E1-04: el servidor conserva la autoridad cuando el tutor ya resolvió el registro.
+    const resolvedReason = this.resolvedStatusReason(existing.status)
+    if (resolvedReason) return this.rejectedUpdateResult(op.clientOpId, existing, resolvedReason)
+
+    // E1-04: solo una edición de cliente más reciente puede reemplazar la copia del servidor.
+    const timestampRejection = this.updateTimestampRejection(op, existing)
+    if (timestampRejection) return timestampRejection
+
+    const fields = this.extractHourLogUpdateFields(op.payload as Record<string, unknown>, existing.placement)
+    return this.updateHourLogAtomically(op, existing, fields, db)
+  }
+
+  private resolvedStatusReason(status: HourLogStatus): string | null {
+    if (status === HourLogStatus.APPROVED) return 'el tutor ya aprobó este registro de horas; no se puede editar'
+    if (status === HourLogStatus.REJECTED) return 'el tutor ya rechazó este registro de horas; no se puede editar'
+    return null
+  }
+
+  private updateTimestampRejection(
+    op: SyncOperationInput,
+    existing: { updatedAt: Date },
+  ): SyncOperationResult | null {
+    // Sin un updatedAt de cliente parseable, la comparación con el servidor no es confiable.
+    const rawClientUpdatedAt = op.payload.updatedAt
+    const clientUpdatedAt =
+      typeof rawClientUpdatedAt === 'string' || rawClientUpdatedAt instanceof Date
+        ? new Date(String(rawClientUpdatedAt))
+        : null
+    if (!clientUpdatedAt || Number.isNaN(clientUpdatedAt.getTime())) {
+      return this.rejectedUpdateResult(op.clientOpId, existing, 'updatedAt inválido en la operación')
+    }
+
+    const serverUpdatedAt = new Date(existing.updatedAt)
+    if (Number.isNaN(serverUpdatedAt.getTime())) {
+      return this.rejectedUpdateResult(op.clientOpId, existing, 'updatedAt inválido en el servidor')
+    }
+    if (clientUpdatedAt.getTime() <= serverUpdatedAt.getTime()) {
+      return this.rejectedUpdateResult(op.clientOpId, existing, 'existe una versión más reciente en el servidor')
+    }
+    return null
+  }
+
+  private async updateHourLogAtomically(
+    op: SyncOperationInput,
+    existing: { id: number },
+    fields: Record<string, unknown>,
+    db: DbClient,
+  ): Promise<SyncOperationResult> {
+    try {
+      const updated = await db.hourLog.update({
+        where: {
+          id: Number(op.payload.id),
+          status: { in: [HourLogStatus.DRAFT, HourLogStatus.SUBMITTED] },
+        },
+        data: {
+          ...fields,
+          version: { increment: 1 },
+        },
+      })
+      return { clientOpId: op.clientOpId, status: 'applied', server: updated as never, reason: null }
+    } catch (err) {
+      if (!this.isMissingRecordError(err)) throw err
+      return this.recoverAtomicUpdateConflict(op, existing, db)
+    }
+  }
+
+  private isMissingRecordError(err: unknown): boolean {
+    return (
+      (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2025') ||
+      (typeof err === 'object' && err !== null && (err as { code?: string }).code === 'P2025')
+    )
+  }
+
+  private async recoverAtomicUpdateConflict(
+    op: SyncOperationInput,
+    existing: { id: number },
+    db: DbClient,
+  ): Promise<SyncOperationResult> {
+    const current = await db.hourLog.findUnique({ where: { id: Number(op.payload.id) } })
+    return {
+      clientOpId: op.clientOpId,
+      status: 'rejected',
+      server: (current ?? existing) as unknown as Record<string, unknown>,
+      reason: this.atomicUpdateConflictReason(current?.status),
+    }
+  }
+
+  private atomicUpdateConflictReason(status: HourLogStatus | undefined): string {
+    if (status === HourLogStatus.APPROVED) {
+      return 'el tutor aprobó este registro de horas mientras se procesaba la edición; no se puede editar'
+    }
+    if (status === HourLogStatus.REJECTED) {
+      return 'el tutor rechazó este registro de horas mientras se procesaba la edición; no se puede editar'
+    }
+    return 'el registro cambió de estado durante la edición'
+  }
+
+  private rejectedUpdateResult(
+    clientOpId: string,
+    existing: object,
+    reason: string,
+  ): SyncOperationResult {
+    return {
+      clientOpId,
+      status: 'rejected',
+      server: existing as Record<string, unknown>,
+      reason,
+    }
   }
 }

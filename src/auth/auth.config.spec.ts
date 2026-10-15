@@ -56,30 +56,14 @@ describe('AuthConfig', () => {
   })
 
   describe('E3-04: Inicialización del sistema sin secreto de firma', () => {
-    it('falla al compilar el módulo de autenticación si falta JWT_SECRET con mensaje útil', async () => {
+    it('rechaza iniciar si falta JWT_SECRET con mensaje útil', () => {
       delete process.env.JWT_SECRET
-      const { AuthModule } = await import('./auth.module')
-      const { PrismaModule } = await import('../prisma/prisma.module')
-      const { Test } = await import('@nestjs/testing')
-
-      await expect(
-        Test.createTestingModule({
-          imports: [PrismaModule, AuthModule],
-        }).compile(),
-      ).rejects.toThrow('JWT_SECRET no configurado en las variables de entorno')
+      expect(() => AuthConfig.getJwtSecret()).toThrow('JWT_SECRET no configurado en las variables de entorno')
     })
 
-    it('falla si JWT_SECRET usa el valor inseguro conocido de D-07', async () => {
+    it('rechaza iniciar si JWT_SECRET usa el valor inseguro conocido de D-07', () => {
       process.env.JWT_SECRET = AUTH_DEFAULTS.INSECURE_SECRET_FALLBACK
-      const { AuthModule } = await import('./auth.module')
-      const { PrismaModule } = await import('../prisma/prisma.module')
-      const { Test } = await import('@nestjs/testing')
-
-      await expect(
-        Test.createTestingModule({
-          imports: [PrismaModule, AuthModule],
-        }).compile(),
-      ).rejects.toThrow('JWT_SECRET no puede usar el valor inseguro por defecto documentado en D-07')
+      expect(() => AuthConfig.getJwtSecret()).toThrow('JWT_SECRET no puede usar el valor inseguro por defecto documentado en D-07')
     })
 
     it('arranca con normalidad cuando la variable de entorno JWT_SECRET está presente', async () => {

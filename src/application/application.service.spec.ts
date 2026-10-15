@@ -4,9 +4,17 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApplicationService } from './application.service'
 
 const prisma = {
-  application: { create: vi.fn(), findUnique: vi.fn(), update: vi.fn(), findMany: vi.fn() },
+  application: {
+    create: vi.fn(),
+    findUnique: vi.fn(),
+    update: vi.fn(),
+    findMany: vi.fn(),
+    count: vi.fn(),
+  },
   offer: { findUnique: vi.fn() },
   user: { findUnique: vi.fn() },
+  $transaction: vi.fn((cb: (tx: typeof prisma) => unknown) => cb(prisma)),
+  $queryRaw: vi.fn(),
 }
 const offers = { acceptedCount: vi.fn() }
 
@@ -15,13 +23,16 @@ describe('ApplicationService', () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
+    prisma.$transaction.mockImplementation((cb: (tx: typeof prisma) => unknown) => cb(prisma))
+    prisma.$queryRaw.mockResolvedValue([{ id: 10, seats: 3 }])
+    prisma.application.count.mockResolvedValue(1)
     service = new ApplicationService(prisma as never, offers as never)
   })
 
   it('accepts an application when there are seats left', async () => {
     prisma.application.findUnique.mockResolvedValue({ id: 7, offerId: 1, status: 'SUBMITTED' })
-    prisma.offer.findUnique.mockResolvedValue({ id: 1, seats: 3, status: 'PUBLISHED' })
-    offers.acceptedCount.mockResolvedValue(2)
+    prisma.$queryRaw.mockResolvedValue([{ id: 1, seats: 3 }])
+    prisma.application.count.mockResolvedValue(2)
     prisma.application.update.mockImplementation(({ data }) => Promise.resolve({ id: 7, ...data }))
 
     const result = await service.decide(7, 'ACCEPTED' as never)
@@ -32,25 +43,30 @@ describe('ApplicationService', () => {
 
   it('rejects accepting when the offer is already full', async () => {
     prisma.application.findUnique.mockResolvedValue({ id: 7, offerId: 1, status: 'SUBMITTED' })
-    prisma.offer.findUnique.mockResolvedValue({ id: 1, seats: 3, status: 'PUBLISHED' })
-    offers.acceptedCount.mockResolvedValue(3)
+    prisma.$queryRaw.mockResolvedValue([{ id: 1, seats: 3 }])
+    prisma.application.count.mockResolvedValue(3)
 
     await expect(service.decide(7, 'ACCEPTED' as never)).rejects.toThrow(BadRequestException)
   })
 
-  it('lists applications of an offer with their student', async () => {
-    prisma.application.findMany.mockResolvedValue([
-      { id: 1, studentId: 10, status: 'SUBMITTED' },
-      { id: 2, studentId: 11, status: 'SUBMITTED' },
-    ])
-    prisma.user.findUnique
-      .mockResolvedValueOnce({ id: 10, fullName: 'Estudiante 10' })
-      .mockResolvedValueOnce({ id: 11, fullName: 'Estudiante 11' })
+  it.each([0, 1, 20, 200])('lists %i applications with public student fields without individual lookups', async (size) => {
+    const rows = Array.from({ length: size }, (_, i) => ({
+      id: i + 1, offerId: 10, studentId: i + 100,
+      status: ApplicationStatus.SUBMITTED, motivation: 'Prácticas',
+      submittedAt: new Date('2026-01-01'), decidedAt: null,
+      student: { id: i + 100, email: 'student' + i + '@example.com', fullName: 'Student ' + i },
+    }))
+    prisma.application.findMany.mockResolvedValue(rows)
 
-    const result = await service.listByOffer(1)
+    const result = await service.listByOffer(10)
 
-    expect(result).toHaveLength(2)
-    expect(result[0]).toMatchObject({ id: 1, student: { fullName: 'Estudiante 10' } })
+    expect(result).toEqual(rows)
+    expect(prisma.application.findMany).toHaveBeenCalledTimes(1)
+    expect(prisma.application.findMany).toHaveBeenCalledWith({
+      where: { offerId: 10 },
+      include: { student: { select: { id: true, email: true, fullName: true } } },
+    })
+    expect(prisma.user.findUnique).not.toHaveBeenCalled()
   })
 
   describe('E3-07: assertOfferAccess', () => {
@@ -103,29 +119,33 @@ describe('ApplicationService', () => {
   describe('E3-07: listByOffer con autorización', () => {
     it('permite listar postulaciones a la empresa dueña de la oferta', async () => {
       prisma.offer.findUnique.mockResolvedValue({ id: 10, companyId: 5 })
-      prisma.user.findUnique
-        .mockResolvedValueOnce({ companyId: 5 }) // assertOfferAccess
-        .mockResolvedValueOnce({ id: 101, email: 'est1@uni.edu', fullName: 'Estudiante 1' }) // estudiante
+      prisma.user.findUnique.mockResolvedValue({ companyId: 5 })
       prisma.application.findMany.mockResolvedValue([
-        { id: 1, offerId: 10, studentId: 101, status: ApplicationStatus.SUBMITTED },
+        { id: 1, offerId: 10, studentId: 101, status: ApplicationStatus.SUBMITTED,
+          student: { id: 101, email: 'est1@uni.edu', fullName: 'Estudiante 1' } },
       ])
 
       const result = await service.listByOffer(10, 42, Role.COMPANY)
 
       expect(result).toHaveLength(1)
       expect(result[0].id).toBe(1)
+      expect(prisma.user.findUnique).toHaveBeenCalledTimes(1)
+      expect(prisma.user.findUnique).toHaveBeenCalledWith({
+        where: { id: 42 }, select: { companyId: true },
+      })
     })
 
     it('permite listar postulaciones a coordinación', async () => {
       prisma.offer.findUnique.mockResolvedValue({ id: 10, companyId: 5 })
-      prisma.user.findUnique.mockResolvedValueOnce({ id: 101, email: 'est1@uni.edu', fullName: 'Estudiante 1' })
       prisma.application.findMany.mockResolvedValue([
-        { id: 1, offerId: 10, studentId: 101, status: ApplicationStatus.SUBMITTED },
+        { id: 1, offerId: 10, studentId: 101, status: ApplicationStatus.SUBMITTED,
+          student: { id: 101, email: 'est1@uni.edu', fullName: 'Estudiante 1' } },
       ])
 
       const result = await service.listByOffer(10, 999, Role.COORDINATOR)
 
       expect(result).toHaveLength(1)
+      expect(prisma.user.findUnique).not.toHaveBeenCalled()
     })
 
     it('deniega listar postulaciones con 403 Forbidden a una empresa ajena', async () => {

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SyncService } from './sync.service'
 
 const prisma = {
@@ -10,16 +10,33 @@ const prisma = {
   $transaction: vi.fn((cb) => (typeof cb === 'function' ? cb(prisma) : Promise.all(cb))),
 }
 
+const activePlacement = (overrides: Record<string, unknown> = {}) => ({
+  id: 1,
+  studentId: 5,
+  startDate: new Date('2026-04-01T18:00:00.000Z'),
+  endDate: new Date('2026-04-30T18:00:00.000Z'),
+  ...overrides,
+})
+
 describe('SyncService', () => {
   let service: SyncService
 
   beforeEach(() => {
     vi.clearAllMocks()
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-04-15T12:00:00.000Z'))
+    vi.stubEnv('INSTITUTION_TIMEZONE', 'America/Guayaquil')
     prisma.placement.findMany.mockResolvedValue([])
+    prisma.placement.findUnique.mockResolvedValue(activePlacement())
     prisma.document.findMany.mockResolvedValue([])
     prisma.evaluation.findMany.mockResolvedValue([])
     prisma.syncOperation.findUnique.mockResolvedValue(null)
     service = new SyncService(prisma as never)
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllEnvs()
   })
 
   it('returns changes and a checkpoint from the newest row', async () => {
@@ -35,7 +52,7 @@ describe('SyncService', () => {
   })
 
   it('applies a create operation and returns applied', async () => {
-    prisma.placement.findUnique.mockResolvedValue({ id: 1, studentId: 5 })
+    prisma.placement.findUnique.mockResolvedValue(activePlacement())
     prisma.hourLog.create.mockResolvedValue({ id: 77, version: 1 })
 
     const result = await service.push(5, [
@@ -50,6 +67,101 @@ describe('SyncService', () => {
 
     expect(result.results[0]).toMatchObject({ status: 'applied' })
     expect(prisma.syncOperation.create).toHaveBeenCalled()
+  })
+
+  it('normalizes an offline create instant to the configured institutional calendar date', async () => {
+    prisma.hourLog.create.mockResolvedValue({ id: 78, version: 1 })
+
+    const result = await service.push(5, [
+      {
+        clientOpId: '88888888-8888-4888-8888-888888888888',
+        entity: 'hourLog',
+        op: 'create',
+        baseVersion: null,
+        payload: {
+          placementId: 1,
+          date: '2026-04-14T23:30:00-05:00',
+          startTime: '08:00',
+          endTime: '12:00',
+          hours: 4,
+          activity: 'Soporte',
+        },
+      },
+    ])
+
+    expect(result.results[0].status).toBe('applied')
+    expect(prisma.hourLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ date: new Date('2026-04-14T00:00:00.000Z') }) }),
+    )
+  })
+
+  it('rejects a future offline create without mutating the hour log', async () => {
+    const result = await service.push(5, [
+      {
+        clientOpId: '99999999-9999-4999-8999-999999999999',
+        entity: 'hourLog',
+        op: 'create',
+        baseVersion: null,
+        payload: {
+          placementId: 1,
+          date: '2026-04-16',
+          startTime: '08:00',
+          endTime: '12:00',
+          hours: 4,
+          activity: 'Soporte',
+        },
+      },
+    ])
+
+    expect(result.results[0]).toMatchObject({ status: 'rejected', reason: 'No se pueden registrar horas con fecha futura' })
+    expect(prisma.hourLog.create).not.toHaveBeenCalled()
+  })
+
+  it.each(['2026-03-31', '2026-05-01'])('rejects offline create outside the placement range at %s without mutation', async (date) => {
+    vi.setSystemTime(new Date('2026-05-02T12:00:00.000Z'))
+
+    const result = await service.push(5, [
+      {
+        clientOpId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        entity: 'hourLog',
+        op: 'create',
+        baseVersion: null,
+        payload: {
+          placementId: 1,
+          date,
+          startTime: '08:00',
+          endTime: '12:00',
+          hours: 4,
+          activity: 'Soporte',
+        },
+      },
+    ])
+
+    expect(result.results[0]).toMatchObject({ status: 'rejected' })
+    expect(result.results[0].reason).toContain('(2026-04-01 a 2026-04-30)')
+    expect(prisma.hourLog.create).not.toHaveBeenCalled()
+  })
+
+  it('rejects impossible offline dates without mutating the hour log', async () => {
+    const result = await service.push(5, [
+      {
+        clientOpId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        entity: 'hourLog',
+        op: 'create',
+        baseVersion: null,
+        payload: {
+          placementId: 1,
+          date: '2026-02-30',
+          startTime: '08:00',
+          endTime: '12:00',
+          hours: 4,
+          activity: 'Soporte',
+        },
+      },
+    ])
+
+    expect(result.results[0].status).toBe('rejected')
+    expect(prisma.hourLog.create).not.toHaveBeenCalled()
   })
 
   it('returns existing result without creating a duplicate when clientOpId was already processed', async () => {
@@ -99,7 +211,7 @@ describe('SyncService', () => {
         response: winningResponse,
       })
 
-    prisma.placement.findUnique.mockResolvedValue({ id: 1, studentId: 5 })
+    prisma.placement.findUnique.mockResolvedValue(activePlacement())
     prisma.hourLog.create.mockResolvedValue({ id: 89, version: 1 })
     prisma.syncOperation.create.mockRejectedValueOnce(new Error('Unique constraint failed on the fields: (`clientOpId`)'))
 
@@ -121,7 +233,7 @@ describe('SyncService', () => {
   it('rejects offline update when the tutor already approved the hour log', async () => {
     prisma.hourLog.findUnique.mockResolvedValue({
       id: 42,
-      placement: { studentId: 5 },
+      placement: activePlacement(),
       status: 'APPROVED',
       updatedAt: new Date('2026-04-02T10:00:00.000Z'),
     })
@@ -155,7 +267,7 @@ describe('SyncService', () => {
   it('rejects offline update when the tutor already rejected the hour log', async () => {
     prisma.hourLog.findUnique.mockResolvedValue({
       id: 43,
-      placement: { studentId: 5 },
+      placement: activePlacement(),
       status: 'REJECTED',
       updatedAt: new Date('2026-04-02T10:00:00.000Z'),
     })
@@ -190,7 +302,7 @@ describe('SyncService', () => {
   it('applies offline update when the client edit is newer than the server copy', async () => {
     prisma.hourLog.findUnique.mockResolvedValue({
       id: 44,
-      placement: { studentId: 5 },
+      placement: activePlacement(),
       status: 'SUBMITTED',
       updatedAt: new Date('2026-04-02T10:00:00.000Z'),
     })
@@ -219,10 +331,92 @@ describe('SyncService', () => {
     expect(prisma.hourLog.update).toHaveBeenCalled()
   })
 
+  it('normalizes the date of an offline update before writing', async () => {
+    prisma.hourLog.findUnique.mockResolvedValue({
+      id: 48,
+      placement: activePlacement(),
+      status: 'SUBMITTED',
+      updatedAt: new Date('2026-04-02T10:00:00.000Z'),
+    })
+    prisma.hourLog.update.mockResolvedValue({ id: 48, version: 2 })
+
+    const result = await service.push(5, [
+      {
+        clientOpId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+        entity: 'hourLog',
+        op: 'update',
+        baseVersion: 1,
+        payload: {
+          id: 48,
+          date: '2026-04-14T23:30:00-05:00',
+          updatedAt: '2026-04-02T11:00:00.000Z',
+        },
+      },
+    ])
+
+    expect(result.results[0].status).toBe('applied')
+    expect(prisma.hourLog.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ date: new Date('2026-04-14T00:00:00.000Z') }) }),
+    )
+  })
+
+  it('rejects an out-of-range offline date update without mutating the hour log', async () => {
+    prisma.hourLog.findUnique.mockResolvedValue({
+      id: 49,
+      placement: activePlacement(),
+      status: 'SUBMITTED',
+      updatedAt: new Date('2026-04-02T10:00:00.000Z'),
+    })
+
+    const result = await service.push(5, [
+      {
+        clientOpId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+        entity: 'hourLog',
+        op: 'update',
+        baseVersion: 1,
+        payload: {
+          id: 49,
+          date: '2026-03-31',
+          updatedAt: '2026-04-02T11:00:00.000Z',
+        },
+      },
+    ])
+
+    expect(result.results[0]).toMatchObject({ status: 'rejected' })
+    expect(result.results[0].reason).toContain('(2026-04-01 a 2026-04-30)')
+    expect(prisma.hourLog.update).not.toHaveBeenCalled()
+  })
+
+  it('preserves a stored date when an offline update omits the date field', async () => {
+    prisma.hourLog.findUnique.mockResolvedValue({
+      id: 50,
+      date: new Date('2026-04-02T23:30:00.000Z'),
+      placement: activePlacement(),
+      status: 'SUBMITTED',
+      updatedAt: new Date('2026-04-02T10:00:00.000Z'),
+    })
+    prisma.hourLog.update.mockResolvedValue({ id: 50, version: 2 })
+
+    const result = await service.push(5, [
+      {
+        clientOpId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+        entity: 'hourLog',
+        op: 'update',
+        baseVersion: 1,
+        payload: { id: 50, activity: 'Actividad revisada', updatedAt: '2026-04-02T11:00:00.000Z' },
+      },
+    ])
+
+    expect(result.results[0].status).toBe('applied')
+    expect(prisma.hourLog.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.not.objectContaining({ date: expect.anything() }) }),
+    )
+  })
+
   it('rejects offline update when the server copy is newer than the client edit', async () => {
     prisma.hourLog.findUnique.mockResolvedValue({
       id: 45,
-      placement: { studentId: 5 },
+      placement: activePlacement(),
       status: 'DRAFT',
       updatedAt: new Date('2026-04-02T12:00:00.000Z'),
     })
@@ -258,7 +452,7 @@ describe('SyncService', () => {
   it('rejects offline update when payload.updatedAt is not a valid date', async () => {
     prisma.hourLog.findUnique.mockResolvedValue({
       id: 46,
-      placement: { studentId: 5 },
+      placement: activePlacement(),
       status: 'SUBMITTED',
       updatedAt: new Date('2026-04-02T10:00:00.000Z'),
     })
@@ -297,14 +491,14 @@ describe('SyncService', () => {
       // primera lectura (status + updatedAt del servidor): SUBMITTED, aún editable
       .mockResolvedValueOnce({
         id: 47,
-        placement: { studentId: 5 },
+        placement: activePlacement(),
         status: 'SUBMITTED',
         updatedAt: new Date('2026-04-02T10:00:00.000Z'),
       })
       // segunda lectura (tras P2025): el tutor ya lo aprobó
       .mockResolvedValueOnce({
         id: 47,
-        placement: { studentId: 5 },
+        placement: activePlacement(),
         status: 'APPROVED',
         updatedAt: new Date('2026-04-02T10:30:00.000Z'),
       })
@@ -344,6 +538,31 @@ describe('SyncService', () => {
           status: { in: ['DRAFT', 'SUBMITTED'] },
         }),
       }),
+    )
+  })
+
+  it('preserves the stored date when an offline operation deletes a record', async () => {
+    prisma.hourLog.findUnique.mockResolvedValue({
+      id: 51,
+      date: new Date('2026-04-02T23:30:00.000Z'),
+      placement: activePlacement(),
+      status: 'SUBMITTED',
+    })
+    prisma.hourLog.update.mockResolvedValue({ id: 51, deletedAt: new Date('2026-04-15T12:00:00.000Z') })
+
+    const result = await service.push(5, [
+      {
+        clientOpId: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+        entity: 'hourLog',
+        op: 'delete',
+        baseVersion: 1,
+        payload: { id: 51 },
+      },
+    ])
+
+    expect(result.results[0].status).toBe('applied')
+    expect(prisma.hourLog.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.not.objectContaining({ date: expect.anything() }) }),
     )
   })
 
