@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "nest start --watch",
     "benchmark:applications": "tsc -p tsconfig.build.json --incremental false && node scripts/benchmark-applications.mjs --verify",
+    "benchmark:hour-logs": "tsc -p tsconfig.build.json --incremental false && node scripts/benchmark-hour-logs.mjs --verify",
     "build": "tsc -p tsconfig.build.json",
     "test": "vitest run",
     "test:cov": "vitest run --coverage",
