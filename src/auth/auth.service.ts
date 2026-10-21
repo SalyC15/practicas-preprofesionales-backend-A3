@@ -1,7 +1,7 @@
 import * as crypto from 'node:crypto'
-import { Injectable, UnauthorizedException } from '@nestjs/common'
+import { BadRequestException, Injectable, UnauthorizedException } from '@nestjs/common'
 import { JwtService } from '@nestjs/jwt'
-import type { Role } from '@prisma/client'
+import { Role } from '@prisma/client'
 import * as bcrypt from 'bcryptjs'
 import { PrismaService } from '../prisma/prisma.service'
 import { AuthConfig } from './auth.config'
@@ -19,6 +19,32 @@ export class AuthService {
 
   private hashSecret(secret: string): string {
     return crypto.createHash('sha256').update(secret).digest('hex')
+  }
+
+  async register(
+    fullName: string,
+    email: string,
+    password: string,
+    presentedCookies?: Record<string, string>,
+  ): Promise<InternalAuthResult> {
+    const existing = await this.prisma.user.findUnique({
+      where: { email },
+    })
+    if (existing) {
+      throw new BadRequestException('El correo ya está registrado')
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10)
+    await this.prisma.user.create({
+      data: {
+        email,
+        password: hashedPassword,
+        fullName,
+        role: Role.STUDENT,
+      },
+    })
+
+    return this.login(email, password, presentedCookies)
   }
 
   async login(

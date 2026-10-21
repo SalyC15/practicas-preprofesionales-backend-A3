@@ -25,6 +25,12 @@ export class PlacementController {
     return this.accreditationService.reportForPeriod(query.period)
   }
 
+  @Get('tutors')
+  @Roles(Role.COORDINATOR)
+  listTutors() {
+    return this.service.listTutors()
+  }
+
   @Post()
   @Roles(Role.COORDINATOR)
   create(@Body() dto: CreatePlacementDto) {
@@ -51,5 +57,11 @@ export class PlacementController {
     @Req() req: { user: { sub: number; role: Role } },
   ) {
     return this.service.addDocument(id, dto, req.user.sub, req.user.role)
+  }
+
+  @Get(':id/schedule')
+  @Roles(Role.STUDENT, Role.COMPANY, Role.TUTOR, Role.COORDINATOR)
+  getSchedule(@Param('id', ParseIntPipe) id: number) {
+    return this.service.getSchedule(id)
   }
 }

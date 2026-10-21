@@ -41,4 +41,30 @@ describe('PlacementService.activate', () => {
 
     await expect(service.activate(1)).rejects.toThrow(BadRequestException)
   })
+
+  it('calculates company schedule covering required hours without weekends', async () => {
+    prisma.placement.findUnique.mockResolvedValue({
+      id: 10,
+      requiredHours: 12,
+      startDate: new Date('2026-10-12T00:00:00.000Z'), // Lunes
+      company: { name: 'Acme Corp' },
+      hourLogs: [
+        {
+          date: new Date('2026-10-12T00:00:00.000Z'),
+          status: 'APPROVED',
+          hours: 4,
+        },
+      ],
+    })
+
+    const schedule = await service.getSchedule(10)
+
+    expect(schedule.requiredHours).toBe(12)
+    expect(schedule.plannedHours).toBe(12)
+    expect(schedule.totalSessions).toBe(3)
+    expect(schedule.confirmedSessions).toBe(1)
+    expect(schedule.confirmedHours).toBe(4)
+    expect(schedule.sessions[0].status).toBe('APPROVED')
+    expect(schedule.sessions[1].status).toBe('PENDING')
+  })
 })
