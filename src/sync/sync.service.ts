@@ -27,22 +27,36 @@ export class SyncService {
     const order = [{ updatedAt: 'asc' as const }, { id: 'asc' as const }]
     const scope = { placement: { OR: [{ studentId: userId }, { tutorId: userId }] } }
 
-    const [placements, hourLogs, documents, evaluations] = await Promise.all([
+    const [rawPlacements, hourLogs, documents, evaluations] = await Promise.all([
       this.prisma.placement.findMany({
         where: { ...where, OR: [{ studentId: userId }, { tutorId: userId }] },
         orderBy: order,
         take: limit,
+        include: {
+          company: { select: { name: true } },
+          tutor: { select: { fullName: true } },
+          student: { select: { fullName: true } },
+          application: { select: { offer: { select: { title: true } } } },
+        },
       }),
       this.prisma.hourLog.findMany({ where: { ...where, ...scope }, orderBy: order, take: limit }),
       this.prisma.document.findMany({ where: { ...where, ...scope }, orderBy: order, take: limit }),
       this.prisma.evaluation.findMany({ where: { ...where, ...scope }, orderBy: order, take: limit }),
     ])
 
+    const placements = rawPlacements.map(({ company, tutor, student, application, ...rest }) => ({
+      ...rest,
+      companyName: company?.name ?? null,
+      tutorName: tutor?.fullName ?? null,
+      studentName: student?.fullName ?? null,
+      offerTitle: application?.offer?.title ?? null,
+    }))
+
     // El checkpoint es la última fila del orden global (updatedAt asc, id asc) entre
     // las cuatro entidades. Eso garantiza que la siguiente página parta exactamente
     // desde donde terminó esta, sin duplicar y sin saltarse filas con el mismo
     // `updatedAt` (que serían indistinguibles solo por timestamp).
-    const merged = [...placements, ...hourLogs, ...documents, ...evaluations]
+    const merged = [...rawPlacements, ...hourLogs, ...documents, ...evaluations]
     const lastByOrder = this.pickLastByOrder(merged)
     const checkpoint: Checkpoint | null = lastByOrder
       ? { updatedAt: new Date(lastByOrder.updatedAt).toISOString(), id: lastByOrder.id }
