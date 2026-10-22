@@ -1,6 +1,7 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common'
 import { DocumentKind, DocumentStatus, HourLogStatus, PlacementStatus, Role } from '@prisma/client'
 import { PrismaService } from '../prisma/prisma.service'
+import { canReadPlacement } from '../common/placement-access'
 import type { UploadDocumentDto } from './dto/upload-document.dto'
 
 const REQUIRED_DOCS: DocumentKind[] = [DocumentKind.AGREEMENT, DocumentKind.INSURANCE]
@@ -94,7 +95,7 @@ export class PlacementService {
     })
   }
 
-  async getSchedule(id: number) {
+  async getSchedule(id: number, userId: number, role: Role) {
     const placement = await this.prisma.placement.findUnique({
       where: { id },
       include: {
@@ -106,6 +107,10 @@ export class PlacementService {
       },
     })
     if (!placement) throw new NotFoundException('placement no encontrado')
+
+    if (!(await canReadPlacement(this.prisma, placement, userId, role))) {
+      throw new ForbiddenException('no tienes acceso al cronograma de esta práctica')
+    }
 
     const requiredHours = Math.max(0, placement.requiredHours || 0)
     const startTime = '08:00'

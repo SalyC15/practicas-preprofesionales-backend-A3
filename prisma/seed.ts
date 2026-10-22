@@ -67,7 +67,7 @@ async function main() {
         data: {
           companyId: company.id,
           title: `Practicante ${['Backend', 'QA', 'Datos'][j]} — ${company.name}`,
-          description: 'Prácticas preprofesionales de 240 horas en modalidad presencial.',
+          description: `Prácticas preprofesionales de 240 horas en modalidad ${j % 2 === 0 ? 'presencial' : 'híbrida'}.`,
           modality: j % 2 === 0 ? 'PRESENCIAL' : 'HIBRIDA',
           seats: 8 + nextInt(4),
           requiredHours: 240,

@@ -2,9 +2,25 @@ import { BadRequestException, ForbiddenException, Injectable, NotFoundException 
 import { ApplicationStatus, Role } from '@prisma/client'
 import { OfferService } from '../offer/offer.service'
 import { PrismaService } from '../prisma/prisma.service'
+import { PageQueryDto, pageResult } from '../common/page-query.dto'
 
 @Injectable()
 export class ApplicationService {
+  findMineForOffer(studentId: number, offerId: number) {
+    return this.prisma.application.findFirst({ where: { studentId, offerId }, include: { offer: { include: { company: true } } } })
+  }
+  async listPage(query: PageQueryDto, scope: { studentId?: number; offerId?: number }, userId: number, role: Role) {
+    if (scope.offerId !== undefined) await this.assertOfferAccess(scope.offerId, userId, role)
+    const where = scope
+    const [total, items, accepted] = await this.prisma.$transaction([
+      this.prisma.application.count({ where }),
+      this.prisma.application.findMany({ where, skip: (query.page - 1) * query.pageSize, take: query.pageSize,
+        orderBy: [{ submittedAt: 'desc' }, { id: 'desc' }],
+        include: { student: { select: { id: true, fullName: true, email: true } }, offer: { include: { company: true } } } }),
+      this.prisma.application.count({ where: { ...where, status: ApplicationStatus.ACCEPTED } }),
+    ])
+    return { ...pageResult(items, total, query), accepted }
+  }
   constructor(
     private readonly prisma: PrismaService,
     private readonly offers: OfferService,

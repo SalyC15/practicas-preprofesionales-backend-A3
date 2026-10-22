@@ -1,5 +1,6 @@
 import { BadRequestException } from '@nestjs/common'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { Role } from '@prisma/client'
 import { PlacementService } from './placement.service'
 
 const prisma = {
@@ -57,7 +58,7 @@ describe('PlacementService.activate', () => {
       ],
     })
 
-    const schedule = await service.getSchedule(10)
+    const schedule = await service.getSchedule(10, 1, Role.COORDINATOR)
 
     expect(schedule.requiredHours).toBe(12)
     expect(schedule.plannedHours).toBe(12)

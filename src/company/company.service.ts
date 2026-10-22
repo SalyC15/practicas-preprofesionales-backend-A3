@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common'
-import { Role } from '@prisma/client'
+import { Prisma, Role } from '@prisma/client'
+import { PageQueryDto, pageResult } from '../common/page-query.dto'
 import * as bcrypt from 'bcryptjs'
 import { PrismaService } from '../prisma/prisma.service'
 import type { CreateCompanyDto } from './dto/create-company.dto'
@@ -23,6 +24,25 @@ export interface CompanyEntity {
 @Injectable()
 export class CompanyService {
   constructor(private readonly prisma: PrismaService) {}
+
+  async findPage(query: PageQueryDto) {
+    const search = query.search?.trim()
+    const where: Prisma.CompanyWhereInput = search ? { OR: [
+      { name: { contains: search, mode: 'insensitive' } },
+      { sector: { contains: search, mode: 'insensitive' } },
+      { taxId: { contains: search } },
+    ] } : {}
+    const [total, items, summary] = await this.prisma.$transaction([
+      this.prisma.company.count({ where }),
+      this.prisma.company.findMany({ where, orderBy: { id: 'asc' }, skip: (query.page - 1) * query.pageSize, take: query.pageSize }),
+      this.prisma.$queryRaw<{ registered: number; verified: number; sectors: number }[]>`
+        SELECT COUNT(*)::int AS registered,
+               COUNT(*) FILTER (WHERE verified)::int AS verified,
+               COUNT(DISTINCT sector)::int AS sectors FROM companies
+      `,
+    ], { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead })
+    return { ...pageResult(items, total, query), summary: summary[0] }
+  }
 
   async create(dto: CreateCompanyDto): Promise<CompanyEntity> {
     const existingCompany = await this.prisma.company.findUnique({

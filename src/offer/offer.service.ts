@@ -1,11 +1,50 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common'
-import { ApplicationStatus, OfferStatus } from '@prisma/client'
+import { ApplicationStatus, OfferStatus, Prisma } from '@prisma/client'
+import { PageQueryDto, pageResult } from '../common/page-query.dto'
 import { PrismaService } from '../prisma/prisma.service'
 import type { CreateOfferDto } from './dto/create-offer.dto'
 
 @Injectable()
 export class OfferService {
   constructor(private readonly prisma: PrismaService) {}
+
+  async findMyPage(userId: number, query: PageQueryDto) {
+    const user = await this.prisma.user.findUnique({ where: { id: userId }, select: { companyId: true } })
+    if (!user?.companyId) throw new NotFoundException('el usuario no tiene una empresa asociada')
+    const where = { companyId: user.companyId }
+    const [total, offers, published, drafts, applications] = await this.prisma.$transaction([
+      this.prisma.offer.count({ where }),
+      this.prisma.offer.findMany({ where, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        skip: (query.page - 1) * query.pageSize, take: query.pageSize, include: { company: true, _count: { select: { applications: true } } } }),
+      this.prisma.offer.count({ where: { ...where, status: OfferStatus.PUBLISHED } }),
+      this.prisma.offer.count({ where: { ...where, status: OfferStatus.DRAFT } }),
+      this.prisma.application.count({ where: { offer: where } }),
+    ])
+    const accepted = await this.prisma.application.groupBy({ by: ['offerId'],
+      where: { offerId: { in: offers.map((offer) => offer.id) }, status: ApplicationStatus.ACCEPTED }, _count: true })
+    const acceptedByOffer = new Map(accepted.map((row) => [row.offerId, row._count]))
+    const items = offers.map(({ _count, ...offer }) => ({ ...offer, applications: [], applicationCount: _count.applications, acceptedCount: acceptedByOffer.get(offer.id) ?? 0 }))
+    return { ...pageResult(items, total, query), summary: { published, drafts, applications } }
+  }
+
+  async findPage(query: PageQueryDto) {
+    const search = query.search?.trim()
+    const where: Prisma.OfferWhereInput = {
+      status: OfferStatus.PUBLISHED,
+      ...(query.modality ? { modality: query.modality } : {}),
+      ...(search ? { OR: [
+        { title: { contains: search, mode: 'insensitive' } },
+        { company: { name: { contains: search, mode: 'insensitive' } } },
+      ] } : {}),
+    }
+    const [total, items, modalities] = await this.prisma.$transaction([
+      this.prisma.offer.count({ where }),
+      this.prisma.offer.findMany({ where, orderBy: [{ publishedAt: 'desc' }, { id: 'desc' }],
+        skip: (query.page - 1) * query.pageSize, take: query.pageSize, include: { company: true } }),
+      this.prisma.offer.groupBy({ by: ['modality'], where: { status: OfferStatus.PUBLISHED }, orderBy: { modality: 'asc' } }),
+    ], { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead })
+    return { ...pageResult(items, total, query), modalities: modalities.map((row) => row.modality) }
+  }
 
   create(dto: CreateOfferDto) {
     return this.prisma.offer.create({ data: { ...dto, status: OfferStatus.DRAFT } })

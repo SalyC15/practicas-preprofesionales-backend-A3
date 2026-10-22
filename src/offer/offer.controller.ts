@@ -1,4 +1,5 @@
-import { Body, Controller, Get, Param, ParseIntPipe, Patch, Post, Req, UseGuards } from '@nestjs/common'
+import { Body, Controller, Get, Param, ParseIntPipe, Patch, Post, Query, Req, UseGuards } from '@nestjs/common'
+import { PageQueryDto } from '../common/page-query.dto'
 import { Role } from '@prisma/client'
 import { Roles } from '../auth/decorators/roles.decorator'
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard'
@@ -22,6 +23,17 @@ export class OfferController {
   @Roles(Role.COMPANY)
   findMine(@Req() req: { user: { sub: number } }) {
     return this.service.findAllForCompanyUser(req.user.sub)
+  }
+
+  @Get('paged')
+  findPage(@Query() query: PageQueryDto) {
+    return this.service.findPage(query)
+  }
+
+  @Get('me/paged')
+  @Roles(Role.COMPANY)
+  minePage(@Query() query: PageQueryDto, @Req() req: { user: { sub: number } }) {
+    return this.service.findMyPage(req.user.sub, query)
   }
 
   @Get(':id')

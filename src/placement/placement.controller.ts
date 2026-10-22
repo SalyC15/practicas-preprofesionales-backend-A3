@@ -4,7 +4,7 @@ import { Roles } from '../auth/decorators/roles.decorator'
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard'
 import { RolesGuard } from '../auth/guards/roles.guard'
 import { AccreditationService } from './accreditation.service'
-import { AccreditationQueryDto } from './dto/accreditation-query.dto'
+import { AccreditationQueryDto, AccreditationPageQueryDto } from './dto/accreditation-query.dto'
 import { CreatePlacementDto } from './dto/create-placement.dto'
 import { UploadDocumentDto } from './dto/upload-document.dto'
 import { PlacementService } from './placement.service'
@@ -23,6 +23,12 @@ export class PlacementController {
   @Roles(Role.COORDINATOR)
   accreditation(@Query() query: AccreditationQueryDto) {
     return this.accreditationService.reportForPeriod(query.period)
+  }
+
+  @Get('accreditation/paged')
+  @Roles(Role.COORDINATOR)
+  accreditationPage(@Query() query: AccreditationPageQueryDto) {
+    return this.accreditationService.reportPage(query)
   }
 
   @Get('tutors')
@@ -61,7 +67,10 @@ export class PlacementController {
 
   @Get(':id/schedule')
   @Roles(Role.STUDENT, Role.COMPANY, Role.TUTOR, Role.COORDINATOR)
-  getSchedule(@Param('id', ParseIntPipe) id: number) {
-    return this.service.getSchedule(id)
+  getSchedule(
+    @Param('id', ParseIntPipe) id: number,
+    @Req() req: { user: { sub: number; role: Role } },
+  ) {
+    return this.service.getSchedule(id, req.user.sub, req.user.role)
   }
 }

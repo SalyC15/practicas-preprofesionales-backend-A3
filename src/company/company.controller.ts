@@ -1,4 +1,5 @@
-import { Body, Controller, Get, Param, ParseIntPipe, Patch, Post, Req, UseGuards } from '@nestjs/common'
+import { Body, Controller, Get, Param, ParseIntPipe, Patch, Post, Query, Req, UseGuards } from '@nestjs/common'
+import { PageQueryDto } from '../common/page-query.dto'
 import { Role } from '@prisma/client'
 import { Roles } from '../auth/decorators/roles.decorator'
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard'
@@ -37,6 +38,11 @@ export class CompanyController {
   @Get()
   findAll() {
     return this.service.findAll()
+  }
+
+  @Get('paged')
+  findPage(@Query() query: PageQueryDto) {
+    return this.service.findPage(query)
   }
 
   @Post()

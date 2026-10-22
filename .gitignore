@@ -5,3 +5,6 @@ coverage
 eslint-report.json
 .env
 .yura-ci/
+
+*.log
+qa-*
