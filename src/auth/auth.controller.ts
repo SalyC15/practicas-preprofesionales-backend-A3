@@ -12,6 +12,7 @@ import {
 import { AuthConfig } from './auth.config'
 import { AuthService } from './auth.service'
 import { LoginDto } from './dto/login.dto'
+import { RegisterDto } from './dto/register.dto'
 import type { AuthSuccessResponse } from './types/auth.types'
 import {
   type CookieOptions,
@@ -76,6 +77,36 @@ export class AuthController {
       throw new UnauthorizedException('falta el token de acceso')
     }
     return headerStr.slice(7)
+  }
+
+  @Post('register')
+  async register(
+    @Body() dto: RegisterDto,
+    @Res({ passthrough: true }) res: AuthResponse,
+    @Req() req: AuthRequest,
+  ): Promise<AuthSuccessResponse> {
+    this.validateOrigin(req)
+    const rawCookie = Array.isArray(req.headers.cookie) ? req.headers.cookie.join(';') : req.headers.cookie
+    const cookies = req.cookies ?? parseCookies(rawCookie)
+
+    const result = await this.auth.register(dto.fullName, dto.email, dto.password, cookies)
+
+    if (result.prunedCookieNames && result.prunedCookieNames.length > 0) {
+      for (const pruned of result.prunedCookieNames) {
+        res.clearCookie(pruned, getClearCookieOptions())
+      }
+    }
+
+    const cookieName = getGenerationCookieName(result.sessionId, result.generation)
+    const remainingSec = Math.max(0, Math.ceil((result.refreshExpiresAt.getTime() - Date.now()) / 1000))
+    const cookieOptions = getCookieOptions(remainingSec)
+    res.cookie(cookieName, result.refreshTokenSecret, cookieOptions)
+
+    return {
+      accessToken: result.accessToken,
+      expiresAt: result.expiresAt,
+      user: result.user,
+    }
   }
 
   @Post('login')
