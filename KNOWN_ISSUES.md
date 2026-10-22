@@ -37,14 +37,23 @@ Se eliminó la consulta por candidato mediante la carga conjunta de estudiantes.
 El listado ejecuta dos consultas independientemente del número de postulaciones.
 Mediciones y reproducción: [E2-03](docs/E2-03-rendimiento-postulaciones.md).
 
-## D-05 · `calculateAccreditationStatus` da miedo tocarla
+## D-05 · `calculateAccreditationStatus` da miedo tocarla (resuelto en E5-02)
 
 `src/placement/accreditation.ts`
 
-ESLint la marca por complejidad. Son `if` anidados hasta seis niveles con toda la lógica de
-acreditación adentro. Funciona — hasta donde sabemos — pero solo hay dos tests, así que
-cualquier cambio es a ciegas. Si te toca modificar reglas de acreditación, escribe primero
-tests de los casos que hoy funcionan.
+Antes: ESLint la marcaba por complejidad (`complexity` 17, `sonarjs/cognitive-complexity`
+84) y eran `if` anidados hasta seis niveles con toda la lógica de acreditación adentro.
+Funcionaba — hasta donde sabemos — pero solo había dos tests, así que cualquier cambio era
+a ciegas.
+
+Resuelto en dos pasos. E5-01 dejó los 16 tests de caracterización que hoy fijan el
+comportamiento (niveles, mensajes, orden de los mensajes y porcentaje). E5-02 reescribió la
+decisión como una lista ordenada de reglas independientes: gana la primera que aplica y el
+orden de la lista es la prioridad. Agregar una regla nueva es agregar una entrada a esa
+lista, sin tocar las existentes, y el archivo quedó sin hallazgos de ESLint.
+
+Los tests de caracterización y la tabla de reglas: [E5-01](docs/E5-01-reglas-acreditacion.md).
+La estructura elegida y cómo se lee: [E5-02](docs/E5-02-reglas-acreditacion.md).
 
 ## D-07 · `JWT_SECRET` tiene un fallback hardcodeado
 
