@@ -1,6 +1,10 @@
 import { IsInt, IsString, MinLength } from 'class-validator'
 
 export class CreateApplicationDto {
-  @IsInt() offerId!: number
-  @IsString() @MinLength(20) motivation!: string
+  @IsInt({ message: 'El ID de la oferta debe ser un número entero' })
+  offerId!: number
+
+  @IsString({ message: 'La motivación es requerida' })
+  @MinLength(20, { message: 'La motivación debe tener al menos 20 caracteres' })
+  motivation!: string
 }

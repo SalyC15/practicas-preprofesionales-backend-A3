@@ -171,6 +171,9 @@ export class PlacementService {
       .filter((s) => s.status === 'CONFIRMED' || s.status === 'APPROVED')
       .reduce((sum, s) => sum + s.hours, 0)
 
+    const startDateStr = placement.startDate.toISOString().slice(0, 10)
+    const endDateStr = sessions.length > 0 ? sessions[sessions.length - 1].date : startDateStr
+
     return {
       requiredHours,
       plannedHours: accumulatedHours,
@@ -178,6 +181,8 @@ export class PlacementService {
       totalSessions: sessions.length,
       confirmedSessions,
       dailyHours,
+      startDate: startDateStr,
+      endDate: endDateStr,
       sessions,
     }
   }

@@ -90,6 +90,11 @@ model Company {
   name         String
   sector       String
   contactEmail String
+  phone        String?
+  address      String?
+  logoUrl      String?
+  description  String?
+  website      String?
   verified     Boolean  @default(false)
   createdAt    DateTime @default(now())
 
